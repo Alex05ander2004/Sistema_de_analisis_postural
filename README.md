@@ -203,6 +203,7 @@ postural-fatigue-system/
 │   ├── test_background_alerts.py    # Enrutado de alertas, toast y bandeja
 │   └── test_background_pipeline.py  # Segundo plano y pausa, con pipeline real
 └── docs/
+    ├── checklist_pruebas.md             # Pruebas manuales (cámara, bandeja, Cap. IV)
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
     ├── expert_interview_protocol.md     # Acta de la ronda 1 (2026-07-12)
     └── expert_interview_protocol_v2.md  # Instrumento de la ronda 2 (pendiente)
