@@ -33,8 +33,12 @@ data/calibration_*.csv
 data/session_*_report.json
 data/*.csv
 
-# El archivo histórico pre-corrección sí se conserva fuera de git
-data/archive/
+# Los datos archivados se conservan fuera de git (son mediciones), pero la
+# advertencia de por qué NO deben usarse sí debe viajar con el repositorio.
+# Nota: hay que excluir `data/archive/*` y no `data/archive/`, porque git no
+# permite re-incluir un archivo si su directorio padre está excluido.
+data/archive/*
+!data/archive/LEEME.md
 
 # ---------------------------------------------------------------------------
 # Sistema operativo / editores
