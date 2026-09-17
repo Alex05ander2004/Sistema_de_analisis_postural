@@ -1,0 +1,7 @@
+# Requiere Python 3.11 (mediapipe 0.10.14 es la última versión que aún
+# incluye la API legacy `mp.solutions.*` usada en pose_estimator.py /
+# face_estimator.py; mediapipe >=0.10.30 para cp313 la elimina por completo).
+opencv-python==4.10.*
+mediapipe==0.10.14
+flet==0.24.*
+numpy>=1.26

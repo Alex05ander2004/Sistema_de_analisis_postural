@@ -1,0 +1,90 @@
+{
+  "_comment": "Umbrales ergonómicos calibrables — Capítulo III.3.3.2 de la tesis (Huisa Perez, 2026)",
+  "_sources": [
+    "Makhmudov et al. 2024",
+    "Xing et al. 2023",
+    "Soukupová & Čech (EAR)",
+    "Wierwille & Ellsworth 1994 / Dinges & Grace 1998 (PERCLOS)",
+    "Entrevista con experto (fisioterapeuta) — validado 2026-07-12: cervical_angle_max_deg y distancia de cámara; shoulder_asymmetry_max_deg confirmado sin cambios"
+  ],
+  "_escala_metrica": "IMPORTANTE: desde la corrección de geometry.py (espacio isótropo + punto medio inter-auricular), θc, ΔE, EAR y MAR se calculan en píxeles cuadrados y θc vale 0° en postura neutra. Los valores de EAR/MAR medidos antes de esa corrección estaban inflados por W/H = 1.333 y los de θc traían un sesgo constante de ~13°: no son comparables con estos umbrales. Ver docs/validation_report.md §3.3.",
+
+  "postural": {
+    "cervical_angle_max_deg": 30.0,
+    "_cervical_angle_max_deg_comment": "Antes 15.0 (literatura). Ajustado a 30.0 por criterio clínico del experto (30° o menos = aceptable) — ver docs/expert_interview_protocol.md Bloque A1. Con la geometría corregida, 30° corresponde a ~12 cm de desplazamiento anterior de la cabeza en un adulto medio.",
+    "cervical_alert_window_sec": 5.0,
+    "_cervical_alert_window_sec_comment": "PENDIENTE: el experto indicó que este valor requiere revisión bibliográfica propia, no lo definió clínicamente. Sigue siendo el valor de literatura (Makhmudov et al. 2024) hasta confirmar. En A2 marcó '>20 min es demasiado', que acota el extremo superior pero no fija la ventana de alerta.",
+    "shoulder_asymmetry_max_deg": 10.0,
+    "_shoulder_asymmetry_max_deg_comment": "Confirmado por el experto sin cambios (10° o menos = aceptable) — ver Bloque B1. Nota: antes de la corrección de escala, un ΔE real de 10° se medía como 13.2°, así que el umbral efectivo previo era ~7.5° reales.",
+    "shoulder_alert_window_sec": 8.0,
+    "_shoulder_alert_window_sec_comment": "El experto pidió explícitamente que fuera distinta de la ventana cervical (Bloque B2) pero no dio un valor. Se fija en 8.0 s (> 5.0 s cervical) como valor PROVISIONAL de ingeniería, con el criterio de que la asimetría escapular es un patrón más crónico y postural que la flexión cervical, y una ventana más larga reduce disparos por gestos transitorios (alcanzar el ratón, girarse). Debe confirmarse en la segunda ronda de entrevista (Bloque B2 del protocolo v2)."
+  },
+
+  "fatigue": {
+    "ear_threshold": 0.21,
+    "_ear_threshold_comment": "Soukupová & Čech (2016), definido sobre coordenadas en píxeles. Ahora sí se compara contra un EAR calculado en píxeles (ver _escala_metrica).",
+    "ear_alert_window_sec": 3.0,
+    "blink_min_ms": 100,
+    "blink_max_ms": 400,
+    "_blink_comment": "Doble uso: (a) blink_max_ms es el periodo de gracia del ConditionTimer de fatiga — una interrupción del cierre más corta que un parpadeo no reinicia la racha; (b) [blink_min_ms, blink_max_ms] es la ventana que define qué cierre cuenta como parpadeo para la tasa de parpadeo.",
+    "mouth_opening_threshold": 0.45,
+    "_mouth_opening_threshold_comment": "Estimación de ingeniería, sin fuente clínica; el experto no objetó pero sugirió consultar a un especialista en somnolencia. PENDIENTE de calibrar con datos reales usando src/tools/calibration_mode.py (percentil de MAR al hablar vs. al bostezar).",
+    "yawn_alert_window_sec": 3.0,
+    "perclos_enabled": true,
+    "perclos_threshold": 0.15,
+    "perclos_window_sec": 60.0,
+    "_perclos_comment": "PERCLOS = fracción de tiempo con el ojo cerrado en una ventana móvil. Umbral 0.15 sobre ventana de 60 s según la literatura clásica de somnolencia (Wierwille & Ellsworth 1994; Dinges & Grace 1998, FHWA-MCRT-98-006). Es un valor de LITERATURA, no validado por el experto entrevistado — declararlo así en el Capítulo IV. Poner perclos_enabled=false para desactivar esta alerta sin dejar de medir el indicador."
+  },
+
+  "smoothing": {
+    "median_window": 5,
+    "ema_alpha": 0.35,
+    "_comment": "Filtrado temporal (mediana móvil + EMA) aplicado a θc, ΔE, EAR y MAR antes del FSM. Necesario porque la estimación cruda de MediaPipe tiene jitter frame a frame (en la sesión del 2026-07-12, ΔE osciló entre -20.5° y +3.0° sin cambio de postura), y ese jitter reinicia continuamente los temporizadores. Retardo introducido ~0.3 s, despreciable frente a ventanas de 3-5 s. Ver src/vision/smoothing.py."
+  },
+
+  "camera": {
+    "source_index": -1,
+    "_source_index_comment": "-1 = autodetectar el primer índice de cámara que entregue imagen real (no negra); usa 0, 1, 2... para forzar un índice específico",
+    "resolution_width": 640,
+    "resolution_height": 480,
+    "target_fps": 30,
+    "horizontal_fov_deg": 60.0,
+    "_horizontal_fov_deg_comment": "Campo de visión horizontal de la webcam, usado por geometry.estimate_distance_m(). El valor por defecto (60°) es típico de webcams integradas, pero varía entre 55° y 78° según el modelo. CALIBRAR antes de la sesión de validación: sitúate a una distancia medida con cinta métrica (p. ej. 0.60 m), lee la distancia estimada en el panel y ajusta este valor hasta que coincidan.",
+    "min_distance_m": 0.50,
+    "max_distance_m": 0.70,
+    "distance_tolerance_m": 0.20,
+    "_distance_tolerance_comment": "Fuera de [min-tol, max+tol] el sistema marca pose_valid=False y congela los temporizadores posturales: a esa distancia el encuadre ya no permite una medición interpretable, y seguir acumulando tiempo produciría alertas sobre datos inválidos. Dentro de la tolerancia pero fuera del rango recomendado solo se muestra un aviso de encuadre.",
+    "_distance_comment": "Antes 1.60-2.20 m (asunción original de la tesis, Capítulo III). Corregido a 0.50-0.70 m por el experto: la distancia original es la de una webcam de sala de reuniones, no de escritorio — provocaba que el usuario se encorve para ver la pantalla, contaminando la propia postura que se mide. Recomienda además que la cámara quede a la altura de los ojos."
+  },
+
+  "mediapipe": {
+    "pose_model_complexity": 1,
+    "_pose_model_complexity_comment": "0 = lite, 1 = full, 2 = heavy. Bajar a 0 es la palanca principal si no se alcanzan los 30 FPS en el equipo de prueba; medir antes y después con src/tools/benchmark_mediapipe.py.",
+    "pose_min_detection_confidence": 0.5,
+    "pose_min_tracking_confidence": 0.5,
+    "pose_min_landmark_visibility": 0.5,
+    "_pose_min_landmark_visibility_comment": "Visibilidad mínima exigida a orejas y hombros. Por debajo, BlazePose está infiriendo esos puntos sin verlos (cabeza girada, hombro fuera de cuadro) y el ángulo resultante no es una medición: el frame se marca pose_valid=False.",
+    "pose_every_n_frames": 1,
+    "_pose_every_n_frames_comment": "Ejecutar BlazePose 1 de cada N frames. θc y ΔE se evalúan en ventanas de 5-8 s, así que N=2 no afecta a la detección y libera ~50% del coste del modelo más caro. Mantener en 1 para las mediciones de FPS del Capítulo IV; subir a 2 solo si el equipo de prueba no llega a 30 FPS y dejarlo declarado en el reporte.",
+    "face_max_num_faces": 1,
+    "face_min_detection_confidence": 0.5,
+    "face_min_tracking_confidence": 0.5,
+    "face_refine_landmarks": false,
+    "_face_refine_landmarks_comment": "Antes true. refine_landmarks añade el modelo de atención del iris (10 landmarks extra) con una pasada de red adicional por frame. Ninguna métrica de esta tesis usa el iris — EAR y MAR salen de los landmarks base — así que se pagaba latencia por datos que nunca se leían. Poner en true solo si en el futuro se añade seguimiento de mirada.",
+    "face_draw_mode": "metrics",
+    "_face_draw_mode_comment": "'metrics' dibuja solo los 12 puntos de ojos y 4 de boca que entran en el EAR/MAR (~16 primitivas). 'contours' dibuja los contornos faciales (~130 líneas). 'tesselation' dibuja la malla completa (~2600 segmentos por frame): cuesta más que la propia inferencia de Face Mesh y no aporta ninguna información a las métricas — usar solo para capturas de pantalla del documento."
+  },
+
+  "ui": {
+    "telemetry_update_interval_ms": 100,
+    "video_update_interval_ms": 33,
+    "alert_cooldown_sec": 30,
+    "_alert_cooldown_sec_comment": "PENDIENTE de validar con el experto (Bloque D1 no respondido en la sesión del 2026-07-12). 30 s es un valor de ingeniería y probablemente demasiado corto para uso real: con una postura de riesgo sostenida el usuario recibiría 2 modales bloqueantes por minuto, que es la receta clásica de la fatiga de alertas. Considerar 300-600 s tras la segunda ronda de entrevista."
+  },
+
+  "storage": {
+    "db_path": "data/history.db",
+    "max_events_per_session": 10000,
+    "session_export_format": "json"
+  }
+}

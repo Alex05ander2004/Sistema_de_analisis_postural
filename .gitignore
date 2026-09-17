@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# Entorno virtual (974 MB — se reconstruye con: py -3.11 -m venv .venv &&
+# pip install -r requirements.txt)
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+
+# ---------------------------------------------------------------------------
+# Bytecode y cachés
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ---------------------------------------------------------------------------
+# Datos de sesión (NO versionar: son mediciones, no código)
+#
+# La bitácora SQLite y los CSV de calibración se regeneran en cada sesión y
+# pesan según la duración. Lo que SÍ debe versionarse es el reporte redactado
+# a partir de ellos (docs/validation_report.md) y los exports puntuales que
+# se citen en el Capítulo IV, que deben añadirse a mano con `git add -f`.
+# ---------------------------------------------------------------------------
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/calibration_*.csv
+data/session_*_report.json
+data/*.csv
+
+# El archivo histórico pre-corrección sí se conserva fuera de git
+data/archive/
+
+# ---------------------------------------------------------------------------
+# Sistema operativo / editores
+# ---------------------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
