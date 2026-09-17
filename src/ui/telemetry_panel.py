@@ -22,6 +22,33 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
+# Historial de alertas del panel
+# ---------------------------------------------------------------------------
+
+# Cuántas alertas se conservan a la vista. El panel es una columna estrecha:
+# más de cinco entradas lo vuelven ilegible y desplazan a las métricas, que
+# son lo que el usuario consulta en tiempo real. El historial completo de la
+# sesión vive en SQLite (tabla `events`).
+_ALERT_LOG_MAX = 5
+
+_ALERT_LABELS = {
+    "cervical_angle":     "Cabeza adelantada",
+    "shoulder_asymmetry": "Hombros desnivelados",
+    "eye_fatigue":        "Fatiga ocular",
+    "yawn":               "Bostezo",
+    "drowsiness":         "Somnolencia",
+}
+
+_ALERT_LOG_COLORS = {
+    "cervical_angle":     "#FF4444",
+    "shoulder_asymmetry": "#FF8800",
+    "eye_fatigue":        "#9B59B6",
+    "yawn":               "#3498DB",
+    "drowsiness":         "#8E44AD",
+}
+
+
+# ---------------------------------------------------------------------------
 # Helpers de semaforización
 # ---------------------------------------------------------------------------
 
@@ -268,6 +295,13 @@ class TelemetryPanel:
         self._pose_icon = ft.Text("🦴 No detectado", size=11, color=ft.colors.WHITE38)
         self._face_icon = ft.Text("👤 No detectado", size=11, color=ft.colors.WHITE38)
 
+        # Historial de alertas visible en el panel (ver note_alert()).
+        self._alert_history: list = []
+        self._alert_log_empty = ft.Text(
+            "Sin alertas en esta sesión", size=11,
+            color=ft.colors.WHITE24, italic=True)
+        self._alert_log = ft.Column([self._alert_log_empty], spacing=4)
+
         # Distancia estimada: el rango 0.50–0.70 m validado por el experto solo
         # sirve si el usuario puede comprobar en pantalla que esta dentro de el.
         self._dist_text = ft.Text("— m", size=13, weight=ft.FontWeight.BOLD,
@@ -364,9 +398,60 @@ class TelemetryPanel:
                     border_radius=8,
                     padding=ft.padding.symmetric(vertical=8, horizontal=14),
                 ),
+
+                # Alertas recientes
+                #
+                # Con el monitoreo en segundo plano, las notificaciones salen
+                # como toast del sistema y se desvanecen solas. Si el usuario
+                # estaba concentrado o ausente, puede perdérselas: este bloque
+                # es el registro que encuentra al volver al panel, y evita que
+                # la única constancia de la sesión esté en la base SQLite.
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.icons.NOTIFICATIONS_ACTIVE_OUTLINED,
+                                    color=ft.colors.WHITE38, size=14),
+                            ft.Text("Alertas recientes", size=11,
+                                    color=ft.colors.WHITE54),
+                        ], spacing=6),
+                        self._alert_log,
+                    ], spacing=6),
+                    bgcolor="#16162A",
+                    border_radius=8,
+                    padding=ft.padding.symmetric(vertical=8, horizontal=14),
+                ),
             ],
             spacing=6,
         )
+
+    # ------------------------------------------------------------------
+
+    def note_alert(self, alert_event) -> None:
+        """
+        Registra una alerta en el historial visible del panel.
+
+        Se llama desde el despachador de alertas. Mantiene solo las últimas
+        `_ALERT_LOG_MAX`: el panel es una barra lateral estrecha y un historial
+        largo lo vuelve ilegible; la bitácora completa está en SQLite.
+        """
+        from datetime import datetime
+
+        alert_type = alert_event.alert_type.value
+        label = _ALERT_LABELS.get(alert_type, alert_type)
+        color = _ALERT_LOG_COLORS.get(alert_type, "#FFAA00")
+        hora = datetime.fromtimestamp(alert_event.timestamp).strftime("%H:%M")
+
+        self._alert_history.insert(0, (hora, label, color))
+        del self._alert_history[_ALERT_LOG_MAX:]
+
+        self._alert_log.controls = [
+            ft.Row([
+                ft.Text(h, size=10, color=ft.colors.WHITE38),
+                ft.Container(width=4, height=4, bgcolor=c, border_radius=2),
+                ft.Text(l, size=11, color=ft.colors.WHITE70, expand=True),
+            ], spacing=6)
+            for h, l, c in self._alert_history
+        ] or [self._alert_log_empty]
 
     def update(self, metrics, fps: float = 0.0,
                timer_status: Optional[dict] = None) -> None:

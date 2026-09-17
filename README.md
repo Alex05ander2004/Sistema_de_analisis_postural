@@ -17,8 +17,51 @@ Detecta en **tiempo real** y **100% local** (sin nube):
 Además **mide y registra** (sin disparar alertas): componente sagital y lateral
 de θc, tasa de parpadeo por minuto y distancia estimada cámara-usuario.
 
-Al confirmar un riesgo, muestra una **alerta modal bloqueante** con instrucciones
-de pausa activa y registra el evento en una bitácora SQLite local.
+Al confirmar un riesgo, avisa al usuario y registra el evento en una bitácora
+SQLite local.
+
+## Monitoreo en segundo plano
+
+El sistema está pensado para dejarse corriendo toda la jornada mientras el
+usuario trabaja en otras aplicaciones:
+
+- **Cerrar la ventana la oculta en la bandeja del sistema**; la captura y la
+  inferencia siguen activas. Salir de verdad es la opción *Salir* del menú de
+  bandeja (terminar el proceso cierra la sesión en SQLite y partiría la
+  bitácora de la jornada en dos).
+- **Con la ventana oculta se omite el render** —dibujar landmarks y codificar
+  JPEG/Base64— porque nadie lo va a mirar. La inferencia, la geometría, el FSM
+  y la bitácora siguen a plena velocidad: **ninguna medición se ve afectada**.
+- **Pausar desde la bandeja libera la cámara** (`cv2.VideoCapture`), con lo que
+  se apaga el piloto de la webcam. Para quien pausa porque entra en una
+  videollamada, ese LED apagado es la única confirmación creíble de que no se
+  le está grabando. Al reanudar, los temporizadores arrancan de cero.
+
+Menú de bandeja: **Abrir panel** · **Pausar/Reanudar monitoreo** · **Salir**.
+
+### Régimen de alertas
+
+No todas las alertas tienen la misma urgencia, y tratarlas igual falla en las
+dos direcciones. Una cabeza adelantada es un riesgo **acumulativo**:
+interrumpir con un modal cada 30 s produce fatiga de alertas y acaba con la
+herramienta desinstalada. La somnolencia por PERCLOS es un riesgo **agudo**:
+ahí un aviso que se desvanece en cinco segundos es insuficiente.
+
+Por eso el canal se elige por tipo de alerta, configurable en
+`config/thresholds.json` → `alerts` sin tocar código:
+
+| `alerts.mode` | Comportamiento |
+|---|---|
+| `auto` *(por defecto)* | Notificación discreta del sistema; modal bloqueante solo para los tipos de `blocking_alert_types` (por defecto, `drowsiness`) |
+| `toast` | Todo por notificación discreta. Nunca bloquea |
+| `modal` | Todo por modal bloqueante — **el comportamiento original del Capítulo III**, conservado para poder contrastar ambos regímenes en la validación |
+
+En Windows las notificaciones son *toast* nativos (`winotify`), visibles por
+encima de cualquier aplicación y archivados en el Centro de Actividades. En
+Linux y macOS el sistema degrada a un aviso dentro de la propia ventana, que
+sigue siendo no intrusivo. Toda alerta, salga por el canal que salga, queda
+además en **Alertas recientes** del panel de telemetría y en la tabla `events`
+de SQLite.
 
 > **Escala de θc.** 0° = cabeza alineada sobre los hombros. El umbral de 30°
 > corresponde a unos **12 cm** de desplazamiento anterior de la cabeza en un
@@ -47,9 +90,17 @@ de pausa activa y registra el evento en una bitácora SQLite local.
        ▼  AppState (Queue(maxsize=1))
 [UI Thread — Flet]
   ├── VideoFeed       → asigna el frame ya codificado
-  ├── TelemetryPanel  → semáforo, distancia, PERCLOS, temporizadores
-  └── AlertNotifier   → modal bloqueante de pausa activa
+  ├── TelemetryPanel  → semáforo, distancia, PERCLOS, temporizadores, alertas
+  └── AlertDispatcher → elige canal según el tipo de alerta
+         ├── ToastNotifier  → notificación del SO (no intrusiva)  ← por defecto
+         └── AlertNotifier  → modal bloqueante (solo somnolencia)
+
+[TrayIcon — hilo propio]
+  └── Abrir panel · Pausar/Reanudar · Salir
 ```
+
+Con la ventana oculta, `VideoFeed.encode()` y los `draw()` se omiten: todo lo
+que está por encima en el diagrama sigue ejecutándose igual.
 
 **Regla de oro**: los tres hilos (captura, inferencia, UI) **nunca se bloquean
 entre sí**. Dentro del hilo de inferencia, los dos modelos de MediaPipe corren
@@ -109,6 +160,7 @@ postural-fatigue-system/
 ├── .gitignore
 ├── config/
 │   └── thresholds.json       # Umbrales calibrables (θc, EAR, ventanas temporales)
+├── assets/                   # Icono de la app (bandeja y notificaciones)
 ├── data/                     # Datos de sesión (fuera de git)
 │   ├── history.db            # Bitácora de la sesión actual
 │   └── archive/              # Datos pre-corrección — NO usar (ver LEEME.md)
@@ -133,18 +185,23 @@ postural-fatigue-system/
 │   │   ├── transition_test.py      # Transición continua de postura
 │   │   └── benchmark_mediapipe.py  # Latencia REAL, secuencial vs. paralelo
 │   └── ui/
-│       ├── app_ui.py         # Entry point Flet
+│       ├── app_ui.py         # Entry point Flet + bandeja + segundo plano
 │       ├── video_feed.py     # Feed Base64/JPEG
-│       ├── telemetry_panel.py# Dashboard semáforo
-│       └── alert_notifier.py # Modal de pausa activa
-├── tests/                    # 159 tests, ~16 s, sin cámara ni MediaPipe
+│       ├── telemetry_panel.py# Dashboard semáforo + alertas recientes
+│       ├── alert_dispatcher.py # Elige el canal de cada alerta
+│       ├── toast_notifier.py # Notificación del SO (no intrusiva)
+│       ├── tray_icon.py      # Icono de bandeja (segundo plano)
+│       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
+├── tests/                    # 201 tests, ~24 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
 │   ├── test_ui_components.py        # Humo de widgets Flet (panel, feed, alertas)
 │   ├── test_integration_pipeline.py # Pipeline completo con estimadores falsos
 │   ├── test_performance.py          # FPS, latencia, memoria — geometry+FSM sintético
-│   └── test_stress.py               # Oclusión, ruido, distancia, transiciones
+│   ├── test_stress.py               # Oclusión, ruido, distancia, transiciones
+│   ├── test_background_alerts.py    # Enrutado de alertas, toast y bandeja
+│   └── test_background_pipeline.py  # Segundo plano y pausa, con pipeline real
 └── docs/
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
     ├── expert_interview_protocol.md     # Acta de la ronda 1 (2026-07-12)
@@ -172,6 +229,10 @@ Edita `config/thresholds.json` para ajustar sin recompilar:
 | `pose_model_complexity` | 1 | Bajar a 0 si no se alcanzan 30 FPS |
 | `pose_every_n_frames` | 1 | Subir a 2 si no se alcanzan 30 FPS |
 | `face_draw_mode` | `metrics` | `tesselation` es vistoso pero cuesta más que la propia inferencia |
+| `alerts.mode` | `auto` | Canal de las alertas: `auto` / `toast` / `modal` |
+| `alerts.blocking_alert_types` | `["drowsiness"]` | Tipos que sí interrumpen con modal en modo `auto` |
+| `alerts.background_monitoring` | `true` | Cerrar la ventana la oculta en la bandeja en vez de terminar el proceso |
+| `ui.skip_render_when_hidden` | `true` | Omitir el render con la ventana oculta (no afecta a la medición) |
 
 Cada parámetro lleva en el JSON un comentario `_..._comment` con su fuente y su
 estado de validación. Los umbrales pendientes de criterio clínico están
@@ -191,7 +252,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (159 tests, ~16 s, sin cámara ni MediaPipe)
+# Todos los tests (201 tests, ~24 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -205,6 +266,9 @@ python -m pytest tests/test_stress.py -v -s
 
 # Tests del FSM (reloj falso: ventanas reales de 3-8 s en milisegundos)
 python -m pytest tests/test_fusion_fsm.py -v
+
+# Segundo plano: enrutado de alertas, toast, bandeja, pausa y ahorro de render
+python -m pytest tests/test_background_alerts.py tests/test_background_pipeline.py -v
 
 # Pipeline completo con estimadores falsos (sin cámara ni MediaPipe)
 python -m pytest tests/test_integration_pipeline.py -v
@@ -259,7 +323,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 159/159 |
+| Tests | 100% verde | `pytest tests/` | ✅ 201/201 |
 
 ---
 

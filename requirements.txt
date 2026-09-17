@@ -33,6 +33,17 @@ mediapipe==0.10.14
 numpy==2.4.6
 flet==0.24.1
 
+# --- Monitoreo en segundo plano --------------------------------------------
+# pystray + Pillow: icono de bandeja, para que el monitoreo siga corriendo con
+#   la ventana cerrada. Multiplataforma; si el escritorio no tiene bandeja, la
+#   app se degrada sola a ventana normal (ver src/ui/tray_icon.py).
+# winotify: notificación nativa de Windows (toast). SOLO Windows — en Linux y
+#   macOS el sistema usa un aviso dentro de la propia ventana, así que el
+#   marcador de entorno mantiene instalable el proyecto en esos sistemas.
+pystray==0.19.5
+Pillow==12.3.0
+winotify==1.1.0; sys_platform == "win32"
+
 # --- Pruebas (tests/) ------------------------------------------------------
 pytest==9.1.1
 psutil==7.2.2

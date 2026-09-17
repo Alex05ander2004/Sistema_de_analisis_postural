@@ -75,9 +75,24 @@
     "_face_draw_mode_comment": "'metrics' dibuja solo los 12 puntos de ojos y 4 de boca que entran en el EAR/MAR (~16 primitivas). 'contours' dibuja los contornos faciales (~130 líneas). 'tesselation' dibuja la malla completa (~2600 segmentos por frame): cuesta más que la propia inferencia de Face Mesh y no aporta ninguna información a las métricas — usar solo para capturas de pantalla del documento."
   },
 
+  "alerts": {
+    "mode": "auto",
+    "_mode_comment": "Canal de salida de las alertas. 'toast' = siempre notificación discreta del sistema; 'modal' = siempre modal bloqueante (comportamiento original del Capítulo III, se conserva para poder contrastar ambos regímenes en la validación); 'auto' = toast por defecto y modal solo para los tipos de blocking_alert_types. Ver src/ui/alert_dispatcher.py.",
+    "blocking_alert_types": ["drowsiness"],
+    "_blocking_alert_types_comment": "Tipos que SÍ interrumpen en modo 'auto'. Solo somnolencia por defecto: es el único indicador de este sistema que señala un estado agudo (microsueño) y no un hábito postural acumulativo, así que es el único donde interrumpir la tarea está justificado. Valores posibles: cervical_angle, shoulder_asymmetry, eye_fatigue, yawn, drowsiness.",
+    "toast_enabled": true,
+    "_toast_enabled_comment": "Notificaciones del sistema operativo. En Windows usa winotify (toast nativo, queda archivado en el Centro de Actividades); en Linux/macOS degrada a un aviso dentro de la ventana de la app. Poner en false deja solo el canal modal.",
+    "background_monitoring": true,
+    "_background_monitoring_comment": "Cerrar la ventana la oculta en la bandeja del sistema en vez de terminar el proceso, de modo que el monitoreo continúe durante la jornada. Salir requiere la opción 'Salir' del menú de bandeja. Poner en false restaura el comportamiento anterior (cerrar = terminar). Ver src/ui/tray_icon.py.",
+    "pause_on_window_hidden": false,
+    "_pause_on_window_hidden_comment": "false = seguir midiendo con la ventana oculta (es el objetivo del monitoreo en segundo plano). true = congelar el pipeline cuando no se ve la ventana; útil solo para depurar o para medir el consumo diferencial en el Capítulo IV."
+  },
+
   "ui": {
     "telemetry_update_interval_ms": 100,
     "video_update_interval_ms": 33,
+    "skip_render_when_hidden": true,
+    "_skip_render_when_hidden_comment": "Con la ventana oculta o minimizada, el pipeline deja de dibujar el overlay y de codificar JPEG/Base64 (un trabajo que nadie va a mirar) pero SIGUE midiendo a plena velocidad. La inferencia y el FSM no se ven afectados: solo se omite el render. Es la palanca de ahorro de CPU/batería para la jornada completa.",
     "alert_cooldown_sec": 30,
     "_alert_cooldown_sec_comment": "PENDIENTE de validar con el experto (Bloque D1 no respondido en la sesión del 2026-07-12). 30 s es un valor de ingeniería y probablemente demasiado corto para uso real: con una postura de riesgo sostenida el usuario recibiría 2 modales bloqueantes por minuto, que es la receta clásica de la fatiga de alertas. Considerar 300-600 s tras la segunda ronda de entrevista."
   },

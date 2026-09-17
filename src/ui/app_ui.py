@@ -75,6 +75,9 @@ from src.storage.history_logger import HistoryLogger
 from src.ui.video_feed import VideoFeed
 from src.ui.telemetry_panel import TelemetryPanel
 from src.ui.alert_notifier import AlertNotifier
+from src.ui.alert_dispatcher import AlertDispatcher
+from src.ui.toast_notifier import ToastNotifier
+from src.ui.tray_icon import TrayIcon
 
 # ---------------------------------------------------------------------------
 # Configuración de logging
@@ -125,6 +128,28 @@ class InferenceThread(threading.Thread):
     """
     Hilo que ejecuta el pipeline completo en cada frame:
     VideoThread -> MediaPipe (paralelo) -> geometry -> smoothing -> FSM -> UI.
+
+    Monitoreo en segundo plano
+    --------------------------
+    Este hilo no consulta en ningún momento el estado de la ventana para
+    **medir**: sigue capturando e infiriendo aunque la interfaz esté oculta en
+    la bandeja, que es justamente el caso de uso (el usuario trabaja en otra
+    aplicación mientras el sistema vigila su postura).
+
+    Lo que sí depende de la visibilidad es el **render**: dibujar el overlay de
+    landmarks y codificar el frame a JPEG/Base64 cuesta varios milisegundos por
+    frame y solo sirve para que la UI lo pinte. Con la ventana oculta eso es
+    trabajo que se tira, así que se omite. La inferencia, la geometría, el FSM
+    y la bitácora siguen a plena velocidad: el ahorro no afecta a ninguna
+    medición del Capítulo IV.
+
+    Pausa
+    -----
+    `pause()` **detiene la captura de verdad**, no solo el procesamiento: libera
+    `cv2.VideoCapture` y con ello se apaga el piloto de la webcam. Para alguien
+    que pausa el monitoreo porque entra en una videollamada o porque hay otra
+    persona delante, ver el LED apagado es la única confirmación creíble de que
+    no se le está grabando.
     """
 
     def __init__(self, video_thread: VideoThread,
@@ -141,6 +166,19 @@ class InferenceThread(threading.Thread):
         self._video_feed = video_feed
         self._log_metrics_every_n = log_metrics_every_n
         self._stop_event = threading.Event()
+
+        # --- Estado de segundo plano -----------------------------------
+        # `_ui_visible` arranca activo: la app se abre con la ventana a la
+        # vista. `_paused` arranca inactivo: se monitoriza desde el inicio.
+        self._ui_visible = threading.Event()
+        self._ui_visible.set()
+        self._paused = threading.Event()
+
+        ui_cfg_early = thresholds.get("ui", {})
+        self._skip_render_when_hidden = bool(
+            ui_cfg_early.get("skip_render_when_hidden", True))
+        self._pause_on_hidden = bool(
+            thresholds.get("alerts", {}).get("pause_on_window_hidden", False))
 
         cam_cfg = thresholds.get("camera", {})
         self._frame_size = (cam_cfg.get("resolution_width", 640),
@@ -218,6 +256,59 @@ class InferenceThread(threading.Thread):
 
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Control de segundo plano
+    # ------------------------------------------------------------------
+
+    def set_ui_visible(self, visible: bool) -> None:
+        """
+        Informa al pipeline de si la ventana está a la vista.
+
+        Solo gobierna el render (y la pausa, si `pause_on_window_hidden` está
+        activo). La medición continúa en cualquier caso.
+        """
+        if visible:
+            self._ui_visible.set()
+        else:
+            self._ui_visible.clear()
+
+        if self._pause_on_hidden:
+            self.set_paused(not visible)
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused.is_set()
+
+    def set_paused(self, paused: bool) -> None:
+        """
+        Pausa o reanuda el monitoreo, apagando/encendiendo la cámara.
+
+        Al reanudar se reinician los temporizadores del FSM y los filtros: la
+        racha anterior a la pausa describe una postura que ya no está vigente,
+        y arrastrarla dispararía una alerta por un intervalo que nadie midió.
+        """
+        if paused == self._paused.is_set():
+            return
+
+        if paused:
+            self._paused.set()
+            try:
+                self._vt.stop()          # libera la cámara -> LED apagado
+            except Exception:
+                logger.exception("No se pudo detener la captura al pausar.")
+            logger.info("Monitoreo PAUSADO (cámara liberada).")
+        else:
+            self._fsm.reset_all()
+            self._smoothers.reset()
+            try:
+                self._vt.start()
+            except Exception:
+                logger.exception("No se pudo reanudar la captura.")
+            self._paused.clear()
+            logger.info("Monitoreo reanudado.")
+
+    # ------------------------------------------------------------------
+
     def _handle_alert(self, alert_event) -> None:
         """
         Callback del FSM. Persiste el evento **y** lo muestra en la UI.
@@ -239,6 +330,12 @@ class InferenceThread(threading.Thread):
         logger.info("InferenceThread iniciado.")
         try:
             while not self._stop_event.is_set():
+                # Pausado: la cámara está liberada, así que no hay nada que
+                # leer. Se espera sin quemar CPU y sin tocar el FSM.
+                if self._paused.is_set():
+                    self._stop_event.wait(0.2)
+                    continue
+
                 frame = self._vt.get_frame(timeout=0.05)
                 if frame is None:
                     continue
@@ -297,7 +394,15 @@ class InferenceThread(threading.Thread):
                 # velocidad de inferencia.
                 now = time.perf_counter()
                 b64 = None
-                if (now - self._last_render_ts) >= self._render_interval_sec:
+                # Con la ventana oculta (bandeja o minimizada) nadie va a ver
+                # este frame: dibujar el overlay y codificarlo a JPEG/Base64
+                # sería trabajo tirado durante toda la jornada. Se omite el
+                # render, pero todo lo anterior —inferencia, geometría, FSM y
+                # bitácora— ya se ejecutó a plena velocidad.
+                render_wanted = (self._ui_visible.is_set()
+                                 or not self._skip_render_when_hidden)
+                if (render_wanted
+                        and (now - self._last_render_ts) >= self._render_interval_sec):
                     self._last_render_ts = now
                     annotated = frame  # el frame BGR original, ya no lo lee nadie
                     self._pose_est.draw(annotated, pose_result)
@@ -429,6 +534,9 @@ def main(page: ft.Page):
     cam_cfg = thresholds.get("camera", {})
 
     page.title = "Monitor Postural y Fatiga — Edge AI"
+    _icon_path = PROJECT_ROOT / "assets" / "icon.ico"
+    if _icon_path.exists():
+        page.window.icon = str(_icon_path)
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#0A0A16"
     page.padding = 0
@@ -443,9 +551,60 @@ def main(page: ft.Page):
     telemetry_panel = TelemetryPanel(thresholds)
     alert_notifier  = AlertNotifier(page, on_dismissed=lambda _: None)
 
-    def on_alert_fired(alert_event):
-        """Llamado desde el InferenceThread. Delega al hilo de UI."""
+    # ----------------------------------------------------------------
+    # Canales de alerta
+    #
+    # El modal bloqueante se reserva para lo agudo (somnolencia). Todo lo
+    # demás sale como notificación del sistema, que se ve por encima de la
+    # aplicación en la que esté trabajando el usuario y se cierra sola. Ver
+    # src/ui/alert_dispatcher.py para el porqué de esta separación.
+    # ----------------------------------------------------------------
+    alerts_cfg = thresholds.get("alerts", {})
+
+    def _show_modal_on_ui_thread(alert_event):
+        """El FSM llama desde el hilo de inferencia; Flet exige su propio hilo."""
         page.run_thread(lambda: alert_notifier.show(alert_event))
+
+    def _fallback_banner(alert_event):
+        """
+        Aviso dentro de la ventana para plataformas sin toast nativo.
+
+        Un SnackBar no bloquea ni roba el foco, así que conserva el carácter
+        no intrusivo del toast aunque no salga del marco de la aplicación.
+        """
+        def _show():
+            page.open(ft.SnackBar(
+                content=ft.Text(alert_event.message, color=ft.colors.WHITE),
+                bgcolor="#FF8800",
+                duration=6000,
+            ))
+        try:
+            page.run_thread(_show)
+        except Exception:
+            logger.debug("No se pudo mostrar el aviso de respaldo.")
+
+    toast_notifier = ToastNotifier(
+        fallback=_fallback_banner,
+        enabled=bool(alerts_cfg.get("toast_enabled", True)),
+    )
+
+    def _record_alert_in_panel(alert_event):
+        """Deja rastro visible en el panel: es lo que el usuario mira al volver."""
+        try:
+            page.run_thread(lambda: telemetry_panel.note_alert(alert_event))
+        except Exception:
+            logger.debug("No se pudo anotar la alerta en el panel.")
+
+    dispatcher = AlertDispatcher(
+        thresholds=thresholds,
+        toast=toast_notifier,
+        show_modal=_show_modal_on_ui_thread,
+        on_any_alert=_record_alert_in_panel,
+    )
+
+    def on_alert_fired(alert_event):
+        """Llamado desde el InferenceThread. No debe bloquear."""
+        dispatcher.dispatch(alert_event)
 
     state_queue: Queue = Queue(maxsize=1)
 
@@ -604,12 +763,90 @@ def main(page: ft.Page):
         inference_thread.join(timeout=5.0)
         if inference_thread.is_alive():
             logger.warning("InferenceThread no terminó en 5 s.")
+        toast_notifier.close()
+        if tray is not None:
+            tray.stop()
         logger.info("Aplicación cerrada limpiamente.")
 
+    # ----------------------------------------------------------------
+    # Bandeja del sistema y monitoreo en segundo plano
+    #
+    # Con `background_monitoring` activo, cerrar la ventana la OCULTA: la
+    # captura y la inferencia siguen corriendo en sus hilos y el usuario
+    # recupera el panel desde la bandeja. Salir de verdad es una acción
+    # explícita, porque terminar el proceso cierra la sesión en SQLite y parte
+    # en dos la bitácora de la jornada.
+    # ----------------------------------------------------------------
+    background_enabled = bool(alerts_cfg.get("background_monitoring", True))
+
+    def _show_window():
+        """Restaura la ventana desde la bandeja. Llamado desde el hilo de pystray."""
+        def _restore():
+            page.window.visible = True
+            page.window.minimized = False
+            page.window.to_front()
+            page.update()
+            inference_thread.set_ui_visible(True)
+        try:
+            page.run_thread(_restore)
+        except Exception:
+            logger.exception("No se pudo restaurar la ventana.")
+
+    def _hide_window():
+        """Oculta la ventana sin detener el monitoreo."""
+        page.window.visible = False
+        page.update()
+        inference_thread.set_ui_visible(False)
+        logger.info("Ventana oculta; el monitoreo continúa en segundo plano.")
+
+    def _on_tray_pause(paused: bool):
+        inference_thread.set_paused(paused)
+
+    def _on_tray_quit():
+        _shutdown()
+        try:
+            page.run_thread(page.window.destroy)
+        except Exception:
+            logger.debug("La ventana ya no estaba disponible al salir.")
+
+    tray = TrayIcon(
+        on_show=_show_window,
+        on_toggle_pause=_on_tray_pause,
+        on_quit=_on_tray_quit,
+    ) if background_enabled else None
+
+    tray_active = tray.start() if tray is not None else False
+
     def _on_window_event(e):
-        if e.data == "close" or getattr(e, "type", None) == ft.WindowEventType.CLOSE:
-            _shutdown()
-            page.window.destroy()
+        event = e.data or getattr(e, "type", None)
+
+        # Minimizar/ocultar solo afecta al render, nunca a la medición.
+        #
+        # Deliberadamente NO se reacciona a "blur": una ventana puede perder el
+        # foco y seguir visible en pantalla (segundo monitor, ventanas lado a
+        # lado). Congelar ahí el render dejaría al usuario mirando un feed
+        # detenido. Solo cuentan los eventos en los que la ventana deja de
+        # verse de verdad.
+        if event in ("minimize", "hide"):
+            inference_thread.set_ui_visible(False)
+            return
+        if event in ("restore", "show", "maximize", "focus"):
+            inference_thread.set_ui_visible(True)
+            return
+
+        if event == "close" or getattr(e, "type", None) == ft.WindowEventType.CLOSE:
+            # Solo se oculta si la bandeja está realmente activa: sin icono
+            # visible, ocultar la ventana dejaría un proceso fantasma que el
+            # usuario no puede recuperar ni cerrar.
+            if tray_active:
+                _hide_window()
+                tray.notify(
+                    "Monitoreo activo",
+                    "El sistema sigue vigilando tu postura en segundo plano. "
+                    "Usa 'Salir' en la bandeja para terminar.")
+            else:
+                _shutdown()
+                page.window.destroy()
 
     page.window.prevent_close = True
     page.window.on_event = _on_window_event
@@ -620,6 +857,13 @@ def main(page: ft.Page):
     vt.start()
     inference_thread.start()
     page.run_task(_ui_update_loop)
+
+    if tray_active:
+        logger.info("Monitoreo en segundo plano habilitado (icono de bandeja).")
+    elif background_enabled:
+        logger.warning(
+            "background_monitoring está activo pero no hay bandeja disponible: "
+            "cerrar la ventana terminará la aplicación.")
 
 
 if __name__ == "__main__":

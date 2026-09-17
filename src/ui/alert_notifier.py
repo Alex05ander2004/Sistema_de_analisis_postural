@@ -3,6 +3,22 @@ alert_notifier.py
 -----------------
 Componente de alerta modal bloqueante para Flet.
 
+**Ya no es el canal por defecto.** Desde la incorporación del monitoreo en
+segundo plano, `src/ui/alert_dispatcher.py` decide qué alerta sale por aquí y
+cuál por notificación discreta del sistema (`toast_notifier.py`). Con la
+configuración por defecto este modal se reserva para la **somnolencia**, que es
+el único indicador agudo del sistema; el resto son riesgos acumulativos, donde
+interrumpir al usuario cada 30 s produce fatiga de alertas.
+
+El modal sigue siendo el comportamiento descrito en el Capítulo III de la
+tesis, y puede reactivarse para todas las alertas con `alerts.mode: "modal"` en
+`config/thresholds.json` — precisamente para poder contrastar ambos regímenes
+en la sesión de validación. Ver `docs/validation_report.md` §3.5.
+
+Limitación conocida (la razón de que exista el otro canal): este modal se pinta
+**dentro** de la ventana de Flet, así que es invisible si el usuario está
+trabajando en otra aplicación o la ventana está oculta en la bandeja.
+
 Se activa cuando el FSM confirma una condición de riesgo.
 Muestra un modal con:
   - Tipo de alerta (postural / fatiga)

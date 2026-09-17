@@ -39,6 +39,18 @@
 > (los emitió sobre una descripción verbal de la escala, no sobre lecturas del
 > sistema). Las tablas 3.1b y 4.4 están marcadas en consecuencia.
 
+> **Actualización 2026-09-17 (4) — Operación en segundo plano y régimen de
+> alertas.** El sistema pasa a poder ejecutarse todo el día en la bandeja
+> mientras el usuario trabaja en otras aplicaciones, y las alertas posturales
+> dejan de ser modales bloqueantes para convertirse en notificaciones discretas
+> del sistema operativo. **Esto modifica el comportamiento descrito en el
+> Capítulo III y debe declararse en la redacción final.** El modal se conserva
+> para la somnolencia (riesgo agudo) y sigue disponible para todas las alertas
+> mediante `alerts.mode: "modal"`, de modo que ambos regímenes puedan
+> contrastarse en la validación en lugar de sustituir uno por otro sin
+> evidencia. Justificación, implementación y verificación en la nueva sección
+> 3.5.
+
 | Indicador | Meta (Cap. III) | Resultado obtenido | ¿Cumple? |
 |---|---|---|---|
 | FPS sostenido (geometry+FSM puro, sin MediaPipe) | ≥ 30 FPS | ~9,300–16,000 FPS equiv. | ☑ Sí |
@@ -48,7 +60,7 @@
 | **Latencia total del pipeline (con MediaPipe)** | **< 50 ms** | **72.2 ms antes de optimizar; pendiente de re-medir (ver 3.1c)** | **⬜ Re-medición pendiente** |
 | Precisión de clasificación | ≥ 90% | Pendiente (validación con usuario/experto real) | ☐ Pendiente |
 | Tasa de falsos positivos | < 5% | 0% en pruebas automatizadas (`test_stress.py`, `test_integration_pipeline.py`) | ☑ Sí (solo en condiciones sintéticas) |
-| Cobertura de tests | — | 159 tests, 100% en verde (~16 s) | ☑ Sí |
+| Cobertura de tests | — | 201 tests, 100% en verde (~24 s) | ☑ Sí |
 | Uso de CPU | Estable | Sin deriva de latencia (-0.002 a -0.030 ms en 180 frames, geometry puro) | ☑ Sí |
 | Uso de RAM | Estable | 0.0 MB de crecimiento en 500 frames (geometry puro) | ☑ Sí |
 
@@ -302,6 +314,110 @@ la literatura sí asocia al estado del operador:
 
 ---
 
+## 3.5 Operación en segundo plano y régimen de alertas
+
+*(Añadido el 2026-09-17. Modifica el comportamiento descrito en el Capítulo III
+y debe declararse en la redacción final — ver justificación abajo.)*
+
+### 3.5.1 El problema con el diseño original
+
+El Capítulo III especifica una **alerta modal bloqueante**. Auditado contra el
+caso de uso real —el sistema vigilando la postura mientras la persona trabaja
+en otra aplicación— ese diseño falla de tres formas, todas verificables en el
+código anterior:
+
+| Fallo | Consecuencia |
+|---|---|
+| El modal de Flet se pinta **dentro** de la ventana de la aplicación | Si el usuario está en otro programa, la alerta se dispara, se registra en SQLite y **no la ve nunca** |
+| `AlertNotifier.show()` descarta la alerta si ya hay un modal abierto | La **primera** alerta que salte con el usuario ausente deja el modal abierto y **suprime de la interfaz todas las alertas posteriores de la sesión** |
+| El modal persiste hasta que se pulsa el botón | Al volver, el usuario encuentra un aviso sobre una postura de hace veinte minutos, bloqueando la app |
+
+A esto se suma el problema de **fatiga de alertas** que el propio
+`config/thresholds.json` ya anotaba para `alert_cooldown_sec`: con un cooldown
+de 30 s y postura de riesgo sostenida, un modal bloqueante produce dos
+interrupciones por minuto.
+
+### 3.5.2 Criterio adoptado: el canal depende de la naturaleza del riesgo
+
+No todas las alertas de este sistema son equivalentes, y ese es el argumento
+que justifica el cambio:
+
+- **Riesgos acumulativos** (θc, ΔE, EAR, MAR). La lesión musculoesquelética se
+  construye por exposición sostenida, no por un instante concreto. Un aviso
+  periférico que no rompe la tarea es proporcionado al riesgo, y además evita
+  el efecto perverso de que el usuario desactive la herramienta.
+- **Riesgo agudo** (somnolencia por PERCLOS). Indica un estado del operador
+  —microsueño— que compromete la tarea en curso. Aquí interrumpir sí está
+  justificado y el modal bloqueante se conserva.
+
+El comportamiento original **no se elimina**: `alerts.mode` admite tres
+regímenes (`toast`, `modal`, `auto`) y `modal` reproduce exactamente el
+Capítulo III. Esto permite, si se decide, **comparar ambos regímenes en la
+sesión de validación** en lugar de sustituir uno por otro sin evidencia.
+
+### 3.5.3 Implementación
+
+| Componente | Función |
+|---|---|
+| `src/ui/alert_dispatcher.py` | Enruta cada alerta al canal que le corresponde según `alerts.mode` y `alerts.blocking_alert_types` |
+| `src/ui/toast_notifier.py` | Notificación nativa de Windows (`winotify`); degrada a aviso dentro de la ventana en Linux/macOS |
+| `src/ui/tray_icon.py` | Icono de bandeja (`pystray`): Abrir panel / Pausar-Reanudar / Salir |
+| `TelemetryPanel.note_alert()` | Historial visible de las últimas 5 alertas, para el usuario que no vio el toast |
+
+Tres decisiones de implementación con consecuencias medibles:
+
+1. **La medición no depende de la visibilidad de la ventana.** El
+   `InferenceThread` nunca consulta el estado de la ventana para medir. Lo que
+   se omite con la ventana oculta es el **render** (overlay de landmarks +
+   codificación JPEG/Base64), trabajo que solo existe para que la UI lo pinte.
+   Inferencia, geometría, FSM y bitácora siguen a plena velocidad, de modo que
+   **ninguna cifra del Capítulo IV se ve afectada por el ahorro**.
+2. **Pausar libera la cámara.** `set_paused(True)` detiene `VideoThread` y con
+   ello `cv2.VideoCapture`, apagando el piloto de la webcam. Es un requisito de
+   confianza, no de rendimiento: sin LED apagado, el usuario no tiene forma de
+   verificar que no se le está grabando. Al reanudar se reinician los
+   temporizadores del FSM, porque la racha previa describe una postura que ya
+   no está vigente.
+3. **El toast se emite en un hilo aparte.** `winotify` lanza un proceso de
+   PowerShell (cientos de ms); emitirlo desde el hilo de inferencia habría
+   hundido el FPS justo en el instante de la alerta, que es precisamente el
+   momento que mide este capítulo.
+
+### 3.5.4 Verificación
+
+| Comprobación | Resultado |
+|---|---|
+| La medición continúa con la ventana oculta | ✅ `test_background_pipeline.py::test_measurement_continues_while_window_hidden` |
+| Las alertas se disparan en segundo plano | ✅ `test_alerts_still_fire_with_window_hidden` |
+| Con ventana oculta no se codifica ningún frame | ✅ mismo test (`frame_b64 is None` en todos los estados) |
+| El render se reanuda al mostrar la ventana | ✅ `test_render_resumes_when_window_shown_again` |
+| Pausar detiene la captura (libera la cámara) | ✅ `test_pause_releases_the_camera` |
+| Reanudar reinicia los temporizadores | ✅ `test_resume_clears_stale_streak` |
+| Postura → toast, somnolencia → modal | ✅ `test_background_alerts.py::TestAlertDispatcherRouting` |
+| Un fallo del canal no pierde la alerta | ✅ `test_modal_failure_falls_back_to_toast` |
+| Arranque real de la app con bandeja y toast | ✅ verificado el 2026-09-17 en Windows 11 |
+
+Durante la implementación, las pruebas detectaron una condición de carrera
+real: si una alerta se confirmaba en el instante del cierre de la aplicación,
+`ToastNotifier.show()` lanzaba `AttributeError` sobre un executor ya apagado y
+mataba el hilo de inferencia. Corregido y cubierto por
+`test_show_after_close_does_not_raise`.
+
+### 3.5.5 Pendiente de medir en la sesión real
+
+- **Consumo diferencial primer plano vs. segundo plano.** Poner
+  `ui.skip_render_when_hidden` en `false` y repetir la medición da la cifra del
+  ahorro. Es un dato directo para el apartado de recursos (§3.2), que sigue
+  vacío.
+- **Preferencia de régimen de alertas.** El Bloque E del protocolo v2 puede
+  incorporar la pregunta de si el usuario prefiere `toast` o `modal`, ahora que
+  ambos están disponibles y son intercambiables por configuración.
+- **Tasa de alertas no vistas.** Con el toast, una alerta puede pasar
+  desapercibida. El historial del panel y la tabla `events` permiten contrastar
+  alertas emitidas contra alertas reconocidas por el usuario.
+
+---
+
 ## 4. Resultados de Precisión
 
 ### 4.1 Protocolo de validación
@@ -474,10 +590,21 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
 2. El proyecto requiere específicamente **Python 3.11** — `mediapipe` en builds recientes para Python 3.13 eliminó la API `mp.solutions.*` que usa este código. Esto debe documentarse claramente para quien reproduzca el entorno (ya corregido en `README.md`).
 3. La validación de precisión (≥90%, matriz de confusión) y las pruebas de distancia/iluminación real siguen pendientes de una sesión con usuario/experto real — no son automatizables. El Bloque E del protocolo v2 está diseñado para producir directamente las filas de la matriz de confusión de la sección 4.2.
 4. **Todas las mediciones de métricas anteriores al 2026-09-07 son inválidas** por los errores del modelo geométrico documentados en la sección 3.3. La sección 4.4 está marcada en consecuencia.
-5. **Los umbrales provienen de un único informante experto** (N=1), y varios de ellos quedaron sin valor clínico: las dos ventanas temporales posturales, el cooldown entre alertas y los umbrales de aviso (semáforo amarillo, hoy cableado al 70% del rojo sin base clínica). El protocolo v2 (`docs/expert_interview_protocol_v2.md`) los aborda y propone ampliar a tres informantes en el módulo postural.
-6. **Umbrales que siguen siendo de literatura o de ingeniería, no validados clínicamente por el experto entrevistado:** EAR (0.21, literatura de visión artificial), PERCLOS (0.15/60 s, literatura de conducción), MAR de bostezo (0.45, estimación de ingeniería sin fuente). Deben declararse como tales en el Capítulo IV.
-7. **Ambigüedad de escala en el umbral cervical.** Al experto se le pidió un valor en la escala θc advirtiéndole que θc ≈ 90° − CVA, y respondió "de 30° para abajo". No consta si razonaba en θc o en CVA, y el significado clínico es opuesto. El bloque A0 del protocolo v2 lo resuelve con una escala visual.
-8. **La estimación de distancia usa una media poblacional** de ancho biacromial (0.38 m) y un FOV de cámara asumido (60°). Es suficiente para avisar del encuadre, pero debe calibrarse con una medición con cinta métrica antes de reportar distancias en el Capítulo IV (`camera.horizontal_fov_deg`).
+5. **El régimen de alertas cambió respecto al Capítulo III y no está validado
+   con usuarios.** La sustitución del modal bloqueante por notificaciones
+   discretas (sección 3.5) se sostiene en un argumento de proporcionalidad
+   —riesgo acumulativo vs. agudo— y en el problema de fatiga de alertas, no en
+   evidencia recogida con participantes de esta tesis. El Bloque E del
+   protocolo v2 debería incorporar la comparación de ambos regímenes, que ahora
+   son intercambiables por configuración.
+6. **La tasa de alertas efectivamente percibidas no se mide.** Con un toast, el
+   usuario puede no verlo. La tabla `events` registra alertas *emitidas*, no
+   *atendidas*; la diferencia importa para interpretar cualquier cifra de
+   eficacia del sistema.
+7. **Los umbrales provienen de un único informante experto** (N=1), y varios de ellos quedaron sin valor clínico: las dos ventanas temporales posturales, el cooldown entre alertas y los umbrales de aviso (semáforo amarillo, hoy cableado al 70% del rojo sin base clínica). El protocolo v2 (`docs/expert_interview_protocol_v2.md`) los aborda y propone ampliar a tres informantes en el módulo postural.
+8. **Umbrales que siguen siendo de literatura o de ingeniería, no validados clínicamente por el experto entrevistado:** EAR (0.21, literatura de visión artificial), PERCLOS (0.15/60 s, literatura de conducción), MAR de bostezo (0.45, estimación de ingeniería sin fuente). Deben declararse como tales en el Capítulo IV.
+9. **Ambigüedad de escala en el umbral cervical.** Al experto se le pidió un valor en la escala θc advirtiéndole que θc ≈ 90° − CVA, y respondió "de 30° para abajo". No consta si razonaba en θc o en CVA, y el significado clínico es opuesto. El bloque A0 del protocolo v2 lo resuelve con una escala visual.
+10. **La estimación de distancia usa una media poblacional** de ancho biacromial (0.38 m) y un FOV de cámara asumido (60°). Es suficiente para avisar del encuadre, pero debe calibrarse con una medición con cinta métrica antes de reportar distancias en el Capítulo IV (`camera.horizontal_fov_deg`).
 
 ### 7.3 Trabajo Futuro
 
@@ -489,6 +616,8 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
 6. Aplicar el protocolo de entrevista v2 (`docs/expert_interview_protocol_v2.md`) en sus tres módulos, para cerrar los 9 parámetros que siguen sin base clínica
 7. Calibración individual del EAR al inicio de cada sesión (el umbral único de 0.21 ignora la variabilidad anatómica del ojo entre personas)
 8. Habilitar la alerta por tasa de parpadeo cuando un especialista fije los valores de corte
+9. Arranque automático con la sesión de Windows, para que el monitoreo no dependa de que el usuario recuerde abrir la aplicación
+10. Resumen diario/semanal de postura a partir de la bitácora, como alternativa de baja intrusión a la alerta en tiempo real
 
 ---
 
