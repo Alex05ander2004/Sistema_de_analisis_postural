@@ -1,7 +1,38 @@
-# Requiere Python 3.11 (mediapipe 0.10.14 es la última versión que aún
-# incluye la API legacy `mp.solutions.*` usada en pose_estimator.py /
-# face_estimator.py; mediapipe >=0.10.30 para cp313 la elimina por completo).
-opencv-python==4.10.*
+# ---------------------------------------------------------------------------
+# Sistema de Monitoreo Postural y Detección de Fatiga — Tesis Huisa Perez, UNSA
+#
+# REQUIERE PYTHON 3.11.
+#   mediapipe 0.10.14 es la última versión que aún incluye la API legacy
+#   `mp.solutions.*` que usan pose_estimator.py y face_estimator.py
+#   (mediapipe >= 0.10.30 para cp313 la elimina por completo), y solo publica
+#   wheel para Python <= 3.12.
+#
+#   py -3.11 -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# VERSIONES EXACTAS, A PROPÓSITO.
+#   Las cifras de FPS, latencia y precisión del Capítulo IV solo son
+#   reproducibles si el entorno lo es. Estos son los pines del entorno con el
+#   que se ejecutan las mediciones y con el que pasan los 159 tests
+#   (verificado el 2026-09-17 en Windows 11 / Python 3.11.15).
+#   No los aflojes antes de la sustentación.
+#
+# ⚠️ NO instalar `opencv-contrib-python` junto a `opencv-python`.
+#   Los dos paquetes instalan el MISMO directorio `cv2/` en site-packages y el
+#   último en instalarse sobrescribe al otro, dejando dos .dist-info y un solo
+#   binario: `import cv2` puede cambiar de versión silenciosamente en la
+#   siguiente reinstalación. Ninguna función de este proyecto necesita los
+#   módulos contrib. Si alguna vez hace falta, se instala contrib SOLO y se
+#   desinstala opencv-python.
+# ---------------------------------------------------------------------------
+
+# --- Núcleo del sistema ----------------------------------------------------
+opencv-python==4.10.0.84
 mediapipe==0.10.14
-flet==0.24.*
-numpy>=1.26
+numpy==2.4.6
+flet==0.24.1
+
+# --- Pruebas (tests/) ------------------------------------------------------
+pytest==9.1.1
+psutil==7.2.2

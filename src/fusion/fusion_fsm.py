@@ -8,13 +8,20 @@ la tesis para evitar falsos positivos ante eventos transitorios:
 
   IDLE -> OBSERVING -> ALERTED -> COOLDOWN -> IDLE
 
-Reglas de disparo (Capítulo III.3.3.3):
-  - Postura fuera de rango (θc > umbral)   -> alerta tras > 5.0 s continuos
-  - Asimetría de hombros (|ΔE| > umbral)   -> alerta tras > 5.0 s continuos
+Reglas de disparo (Capítulo III.3.3.3). Los valores entre paréntesis son los
+de `config/thresholds.json`; el código lee siempre el JSON, nunca estas cifras:
+  - Postura fuera de rango (θc > 30°)      -> alerta tras > 5.0 s continuos
+  - Asimetría de hombros (|ΔE| > 10°)      -> alerta tras > 8.0 s continuos
   - Fatiga ocular (EAR <= 0.21)            -> alerta tras > 3.0 s continuos
   - Parpadeo fisiológico (100-400 ms)      -> IGNORADO, no genera alerta
   - Bostezo (MAR >= 0.45)                  -> alerta tras > 3.0 s continuos
   - PERCLOS por encima del umbral          -> alerta de somnolencia
+
+La ventana de hombros es distinta de la cervical a petición expresa del
+experto (Bloque B2): la asimetría escapular es un patrón más crónico y una
+ventana más larga evita disparos por gestos transitorios (alcanzar el ratón,
+girarse). El valor 8.0 s es PROVISIONAL, de ingeniería — ver
+`docs/validation_report.md` §8.
 
 Reloj inyectable
 ----------------
@@ -415,7 +422,9 @@ class FusionFSM:
             clock=clock,
         )
         self._timer_shoulder = ConditionTimer(
-            window_sec=post.get("shoulder_alert_window_sec", 5.0),
+            # Fallback 8.0 s, no 5.0: la ventana de hombros debe ser distinta
+            # de la cervical incluso si falta el JSON (petición del experto).
+            window_sec=post.get("shoulder_alert_window_sec", 8.0),
             clock=clock,
         )
         self._timer_ear = ConditionTimer(

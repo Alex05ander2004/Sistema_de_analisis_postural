@@ -19,7 +19,8 @@ Salida:
   - Archivo CSV en data/calibration_TIMESTAMP.csv
 
 Ejecutar:
-  python src/tools/calibration_mode.py [--source 0] [--duration 300]
+  python src/tools/calibration_mode.py [--source -1] [--duration 300]
+  (--source -1 = autodetectar la cámara; es el valor por defecto)
 
 Autor: Fase 4 — Tesis Huisa Perez, UNSA 2026
 """
@@ -46,6 +47,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.capture.video_thread import VideoThread
+from src.capture.camera_source import resolve_camera_source
 from src.vision.pose_estimator import PoseEstimator
 from src.vision.face_estimator import FaceEstimator
 from src.vision.geometry import (
@@ -86,7 +88,7 @@ def load_thresholds() -> dict:
         return json.load(f)
 
 
-def calibrate(source: int = 0, duration_sec: int = 300,
+def calibrate(source: int = -1, duration_sec: int = 300,
               show_video: bool = True) -> None:
     """
     Ejecuta el modo de calibración.
@@ -94,7 +96,8 @@ def calibrate(source: int = 0, duration_sec: int = 300,
     Parameters
     ----------
     source:
-        Índice de cámara.
+        Índice de cámara, o -1 para autodetectar (misma convención que
+        `camera.source_index` en config/thresholds.json).
     duration_sec:
         Duración máxima en segundos (0 = indefinida).
     show_video:
@@ -103,6 +106,14 @@ def calibrate(source: int = 0, duration_sec: int = 300,
     thresholds = load_thresholds()
     mp_cfg = thresholds.get("mediapipe", {})
     cam_cfg = thresholds.get("camera", {})
+
+    # Resolver la cámara ANTES de imprimir nada: con -1 se autodetecta la
+    # primera que entregue imagen real. En el equipo de pruebas el índice 0
+    # abre pero solo transmite frames negros, y una sesión de calibración
+    # sobre frames negros no falla — simplemente sale sin detecciones.
+    _requested = source if source is not None else cam_cfg.get("source_index", -1)
+    _autodetected = _requested is None or _requested < 0
+    source = resolve_camera_source(_requested, verbose=False)
 
     # Rutas de salida
     data_dir = PROJECT_ROOT / "data"
@@ -134,7 +145,8 @@ def calibrate(source: int = 0, duration_sec: int = 300,
     print(f"\n{'='*62}")
     print(f"  MODO CALIBRACIÓN — Sistema Postural y Fatiga")
     print(f"{'='*62}")
-    print(f"  Cámara:          #{source}")
+    print(f"  Cámara:          #{source}"
+          f"{' (autodetectada)' if _autodetected else ' (forzada por --source)'}")
     print(f"  Duración:        {'indefinida' if duration_sec == 0 else f'{duration_sec}s'}")
     print(f"  Salida CSV:      {csv_path.name}")
     print(f"  [Ctrl+C] para detener\n")
@@ -159,7 +171,7 @@ def calibrate(source: int = 0, duration_sec: int = 300,
         draw_landmarks=show_video,
     )
     face_est = FaceEstimator(
-        refine_landmarks=mp_cfg.get("face_refine_landmarks", True),
+        refine_landmarks=mp_cfg.get("face_refine_landmarks", False),
         min_detection_confidence=mp_cfg.get("face_min_detection_confidence", 0.5),
         min_tracking_confidence=mp_cfg.get("face_min_tracking_confidence", 0.5),
         draw_landmarks=show_video,
@@ -354,8 +366,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Modo de calibración — Sistema Monitoreo Postural y Fatiga"
     )
-    parser.add_argument("--source", type=int, default=0,
-                        help="Índice de cámara (default: 0)")
+    parser.add_argument("--source", type=int, default=-1,
+                        help="Índice de cámara; -1 = autodetectar (default)")
     parser.add_argument("--duration", type=int, default=0,
                         help="Duración en segundos (0=indefinida)")
     parser.add_argument("--no-video", action="store_true",

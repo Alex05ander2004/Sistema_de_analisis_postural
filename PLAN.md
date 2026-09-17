@@ -40,6 +40,18 @@ de validación con usuarios reales y la segunda ronda de entrevista con expertos
 4. Revisar `ui.alert_cooldown_sec`: 30 s son dos modales bloqueantes por minuto
    con postura de riesgo sostenida, y eso arruina una sesión de prueba.
 
+> **Saneamiento previo, ya aplicado (2026-09-17).** Antes de empezar a medir se
+> corrigieron cinco cosas que habrían contaminado o bloqueado esta ronda:
+> el proyecto pasó a estar bajo git; la bitácora pre-corrección se archivó en
+> `data/archive/` para que no se mezcle con la sesión real;
+> `calibration_mode.py` —la herramienta del paso 3— tenía `--source 0` cableado
+> y en este equipo el índice 0 solo entrega frames negros, así que ahora
+> autodetecta igual que la app; la detección de cámara se unificó en
+> `src/capture/camera_source.py`; y el entorno tenía `opencv-python` y
+> `opencv-contrib-python` compartiendo el mismo `cv2/`, con riesgo de cambiar
+> de versión a mitad de las mediciones. `requirements.txt` queda con versiones
+> exactas: **no las aflojes hasta después de la sustentación.**
+
 ---
 
 ## 1. Resumen de lo que hay que construir

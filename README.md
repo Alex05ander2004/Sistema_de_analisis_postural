@@ -80,6 +80,17 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> ⚠️ **No instales `opencv-contrib-python` junto a `opencv-python`.** Los dos
+> paquetes instalan el **mismo** directorio `cv2/` en `site-packages`: conviven
+> sin error aparente, pero el último en instalarse sobrescribe el binario del
+> otro y `import cv2` puede cambiar de versión en silencio tras cualquier
+> reinstalación — justo en mitad de una ronda de mediciones. Ninguna función de
+> este proyecto usa los módulos *contrib*. Para comprobar que solo hay uno:
+>
+> ```bash
+> pip list | grep -i opencv
+> ```
+
 ### 3. Ejecutar la aplicación
 
 ```bash
@@ -94,12 +105,17 @@ La cámara se autodetecta al arrancar (prueba los índices 0–3 y usa el primer
 
 ```
 postural-fatigue-system/
-├── requirements.txt
+├── requirements.txt          # Versiones EXACTAS — ver aviso sobre opencv-contrib
+├── .gitignore
 ├── config/
 │   └── thresholds.json       # Umbrales calibrables (θc, EAR, ventanas temporales)
+├── data/                     # Datos de sesión (fuera de git)
+│   ├── history.db            # Bitácora de la sesión actual
+│   └── archive/              # Datos pre-corrección — NO usar (ver LEEME.md)
 ├── src/
 │   ├── capture/
-│   │   └── video_thread.py   # Hilo de captura + Queue(1)
+│   │   ├── video_thread.py   # Hilo de captura + Queue(1)
+│   │   └── camera_source.py  # Autodetección de cámara (compartida app/tools)
 │   ├── vision/
 │   │   ├── pose_estimator.py # BlazePose wrapper (process / draw separados)
 │   │   ├── face_estimator.py # Face Mesh wrapper (process / draw separados)
@@ -109,7 +125,8 @@ postural-fatigue-system/
 │   │   └── fusion_fsm.py     # Máquina de estados multimodal
 │   ├── storage/
 │   │   └── history_logger.py # Bitácora SQLite
-│   ├── tools/
+│   ├── tools/                      # Todas aceptan --source -1 (autodetectar)
+│   │   ├── _config.py              # Carga compartida de thresholds.json
 │   │   ├── calibration_mode.py     # Captura θc/EAR/etc a CSV sin disparar alertas
 │   │   ├── stats_report.py         # Reportes de sesión desde SQLite (Cap. IV)
 │   │   ├── ab_test_cervical.py     # Prueba A/B normal vs. cabeza adelantada
@@ -201,6 +218,31 @@ python src/tools/benchmark_mediapipe.py --frames 300
 
 # Lo mismo sin cámara, con frames sintéticos (tiempos NO comparables)
 python src/tools/benchmark_mediapipe.py --synthetic --frames 60
+```
+
+### Herramientas de medición (requieren cámara)
+
+Todas autodetectan la cámara por defecto (`--source -1`). Fuerza un índice con
+`--source N` solo si sabes cuál quieres.
+
+```bash
+# Calibración: vuelca θc, sagital, lateral, ΔE, EAR, MAR y distancia a CSV
+python src/tools/calibration_mode.py --duration 300
+```
+
+```bash
+# Prueba A/B: ¿θc separa postura normal de cabeza adelantada?
+python src/tools/ab_test_cervical.py --phase-sec 8
+```
+
+```bash
+# Trayectoria continua de θc al pasar de normal a adelantada
+python src/tools/transition_test.py
+```
+
+```bash
+# Reportes de sesión desde la bitácora SQLite (Capítulo IV)
+python src/tools/stats_report.py --list-sessions
 ```
 
 > ⚠️ Ningún test de `pytest` ejecuta MediaPipe ni abre la cámara: no validan el

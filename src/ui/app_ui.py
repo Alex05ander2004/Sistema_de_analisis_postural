@@ -58,6 +58,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.capture.video_thread import VideoThread
+from src.capture.camera_source import resolve_camera_source
 from src.vision.pose_estimator import PoseEstimator
 from src.vision.face_estimator import FaceEstimator
 from src.vision.smoothing import MetricSmootherBank
@@ -97,28 +98,9 @@ def _load_thresholds() -> dict:
         return {}
 
 
-def _detect_camera_source(max_index: int = 4, black_std_threshold: float = 3.0) -> int:
-    """
-    Prueba los índices de cámara 0..max_index-1 y devuelve el primero que
-    entregue un frame con contenido real (no negro).
-
-    Necesario porque en equipos con varias cámaras registradas (IR de Windows
-    Hello, cámaras virtuales, etc.) el índice 0 puede abrir correctamente pero
-    solo transmitir frames en negro.
-    """
-    for idx in range(max_index):
-        cap = cv2.VideoCapture(idx)
-        if not cap.isOpened():
-            cap.release()
-            continue
-        ok, frame = cap.read()
-        cap.release()
-        if ok and frame is not None and frame.std() > black_std_threshold:
-            logger.info("Cámara activa detectada en índice %d", idx)
-            return idx
-        logger.warning("Cámara en índice %d abre pero no entrega imagen real (descartada).", idx)
-    logger.warning("No se detectó ninguna cámara con imagen real; usando índice 0 por defecto.")
-    return 0
+# La detección de cámara vive en src/capture/camera_source.py, compartida con
+# las herramientas de medición: si la app y calibration_mode.py resolvieran la
+# cámara de forma distinta, medirían con dispositivos distintos.
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +449,7 @@ def main(page: ft.Page):
 
     state_queue: Queue = Queue(maxsize=1)
 
-    configured_source = cam_cfg.get("source_index", -1)
-    camera_source = configured_source if configured_source >= 0 else _detect_camera_source()
+    camera_source = resolve_camera_source(cam_cfg.get("source_index", -1))
 
     vt = VideoThread(
         source=camera_source,

@@ -44,6 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.capture.video_thread import VideoThread
+from src.capture.camera_source import detect_camera_source
 from src.vision.pose_estimator import PoseEstimator
 from src.vision.face_estimator import FaceEstimator
 from src.vision.geometry import (
@@ -55,20 +56,6 @@ from src.vision.geometry import (
 from src.fusion.fusion_fsm import FusionFSM, SensorMetrics
 
 sys.path.insert(0, str(PROJECT_ROOT / "src" / "ui"))
-
-
-def _detect_camera_source(max_index: int = 4, black_std_threshold: float = 3.0) -> int:
-    import cv2
-    for idx in range(max_index):
-        cap = cv2.VideoCapture(idx)
-        if not cap.isOpened():
-            cap.release()
-            continue
-        ok, frame = cap.read()
-        cap.release()
-        if ok and frame is not None and frame.std() > black_std_threshold:
-            return idx
-    return 0
 
 
 class _SyntheticSource:
@@ -122,7 +109,7 @@ def benchmark(n_frames: int = 300, source: int = -1,
         source = -1
     else:
         if source < 0:
-            source = _detect_camera_source()
+            source = detect_camera_source()
             print(f"Camara autodetectada: indice {source}")
         vt = VideoThread(source=source, width=width, height=height, target_fps=30)
 

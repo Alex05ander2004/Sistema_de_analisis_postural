@@ -421,6 +421,16 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
 
 > Generada automáticamente por `HistoryLogger` → `data/session_XXXXXXXX_report.json`
 
+> **Estado de la base de datos (2026-09-17).** La bitácora de las tres sesiones
+> exploratorias de julio se ha movido a
+> `data/archive/history_pre-correccion_2026-07.db` y **no debe usarse en este
+> capítulo**: contiene θc con el sesgo de ~13° de la geometría antigua,
+> `events` vacía, `ended_at` en NULL, timestamps de `perf_counter()` en vez de
+> hora de pared y todas las columnas nuevas en NULL (ver
+> `data/archive/LEEME.md` para el detalle). `data/history.db` se crea limpia en
+> la próxima ejecución de la app, de modo que la sesión de validación real no
+> se mezcle con datos de un modelo de medición que ya no existe.
+
 ```json
 {
   "summary": {
@@ -447,11 +457,16 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
 | Objetivo específico | Estado | Observaciones |
 |---|---|---|
 | 1.3.2.1 Calibración de umbrales ergonómicos | ◐ Parcial | Entrevista con experto realizada (θc, ΔE, distancia). Pendiente: ventanas temporales (revisión bibliográfica propia) y re-medición a la distancia corregida |
-| 1.3.2.2 Implementación BlazePose + Face Mesh | ☐ | |
-| 1.3.2.3 Modelo geométrico θc y ΔE | ☐ | |
-| 1.3.2.4 Cálculo EAR y detección de bostezo | ☐ | |
-| 1.3.2.5 Integración con UI Flet | ☐ | |
-| 1.3.2.6 Validación de FPS, latencia, precisión | ☐ | |
+| 1.3.2.2 Implementación BlazePose + Face Mesh | ☑ Implementado | `src/vision/pose_estimator.py` y `face_estimator.py`. Los dos modelos corren **en paralelo** sobre un único buffer RGB compartido (§3.1c). Tasa de detección medida: pose 100%, cara 91.3% (§3.1b) |
+| 1.3.2.3 Modelo geométrico θc y ΔE | ☑ Implementado | `src/vision/geometry.py`. Incluye las dos correcciones de la §3.3 (punto medio inter-auricular y espacio isótropo) y la descomposición sagital/lateral. Cubierto por `tests/test_geometry.py` con regresiones de sesgo, escala e invarianza a la distancia |
+| 1.3.2.4 Cálculo EAR y detección de bostezo | ☑ Implementado | EAR (Soukupová & Čech) y MAR en `geometry.py`; temporizadores y filtro de parpadeo en `fusion_fsm.py`. Añadidos PERCLOS y tasa de parpadeo (§3.4). **El umbral MAR 0.45 sigue sin fuente clínica** (§7.2.6) |
+| 1.3.2.5 Integración con UI Flet | ☑ Implementado | `src/ui/`: feed de video, panel de telemetría con semáforo, modal de pausa activa y banda de encuadre. Humo de widgets en `tests/test_ui_components.py` |
+| 1.3.2.6 Validación de FPS, latencia, precisión | ◐ Parcial | Latencia geometry+FSM ☑ (0.11 ms) y estabilidad de memoria ☑. **FPS real y precisión ≥90% pendientes** de la sesión con cámara y usuario (§3.1c, §4.2) |
+
+> **Nota sobre estas casillas.** "Implementado" significa: el código existe,
+> está cubierto por tests automatizados y ejecuta. **No** significa validado
+> con usuarios reales — esa es la 1.3.2.6, y sigue abierta. La distinción
+> importa para la sustentación: lo construido está cerrado, lo medido no.
 
 ### 7.2 Limitaciones Identificadas
 
