@@ -60,7 +60,7 @@
 | **Latencia total del pipeline (con MediaPipe)** | **< 50 ms** | **72.2 ms antes de optimizar; pendiente de re-medir (ver 3.1c)** | **⬜ Re-medición pendiente** |
 | Precisión de clasificación | ≥ 90% | Pendiente (validación con usuario/experto real) | ☐ Pendiente |
 | Tasa de falsos positivos | < 5% | 0% en pruebas automatizadas (`test_stress.py`, `test_integration_pipeline.py`) | ☑ Sí (solo en condiciones sintéticas) |
-| Cobertura de tests | — | 269 tests, 100% en verde (~23 s) | ☑ Sí |
+| Cobertura de tests | — | 314 tests, 100% en verde (~28 s) | ☑ Sí |
 | Uso de CPU | Estable | Sin deriva de latencia (-0.002 a -0.030 ms en 180 frames, geometry puro) | ☑ Sí |
 | Uso de RAM | Estable | 0.0 MB de crecimiento en 500 frames (geometry puro) | ☑ Sí |
 
@@ -720,6 +720,109 @@ de parpadeos necesitaría el EAR sin filtrar.
 
 ---
 
+## 3.8 Calibración guiada y control explícito del seguimiento
+
+*(2026-09-24. Cambio de procedimiento que afecta a cómo se obtienen todas las
+mediciones relativas del sistema; debe describirse en la metodología.)*
+
+### 3.8.1 Motivo
+
+Tras §3.6 y §3.7, dos de las métricas centrales se miden **respecto al propio
+usuario**: θc como desviación sobre la postura neutra y el EAR contra una
+fracción de su ojo abierto. La validez de ambas depende por completo de **en
+qué condiciones se tomó la referencia**. Hasta ahora se tomaba en silencio
+durante los primeros 20 s de monitoreo, sin ningún control:
+
+- si el usuario estaba encorvado, esa postura quedaba como "neutra";
+- si estaba fuera del rango de distancia, la referencia se medía en unas
+  condiciones distintas a las de uso;
+- nada lo advertía, y la sesión entera quedaba sesgada.
+
+Además la aplicación empezaba a vigilar y a escribir en la bitácora en cuanto
+se abría, antes de que el usuario estuviera colocado.
+
+### 3.8.2 Procedimiento
+
+La aplicación pasa a tener modos explícitos:
+
+| Modo | Cámara | Alertas | Bitácora |
+|---|---|---|---|
+| Vista previa | sí (para encuadrar) | no | no |
+| Calibrando | sí | no | no |
+| Listo | sí | no | no |
+| Monitoreando | sí | **sí** | **sí** |
+| En pausa | **no** (piloto apagado) | no | sesión abierta |
+
+La calibración (`src/fusion/guided_calibration.py`) controla las condiciones
+de medida:
+
+1. El botón *Calibrar* solo se habilita con **rostro detectado, hombros
+   visibles y distancia dentro de 0.50–0.70 m**. Se exige el rango
+   recomendado por el experto, no la banda de tolerancia.
+2. Cuenta atrás de 3 s para que el usuario se coloque. Esas muestras no se
+   usan.
+3. Medición de 20 s con instrucciones en pantalla: recto, quieto, mirando la
+   pantalla.
+4. Si el encuadre se pierde **más de 1 s**, la medición se **reinicia** y se
+   informa del motivo, porque una referencia que mezcla dos posturas no
+   representa ninguna. Las pérdidas más breves (un frame sin detección) se
+   toleran sin usar esas muestras.
+5. Si no se completa en 60 s (postura inestable, ojo no medible), la
+   calibración falla con un motivo en lugar de aceptar una referencia dudosa.
+
+**Una sesión de la bitácora = una calibración + un seguimiento.** La sesión
+empieza al pulsar *Iniciar* y guarda en `sessions.notes` la calibración
+usada (θc neutro, EAR base y umbral, distancia media). Recalibrar durante el
+seguimiento cierra la sesión en curso. En la validación con varios
+participantes, **cada uno queda en su propia sesión** con su propia
+referencia documentada.
+
+**Recalibrar es siempre explícito.** Pausar y reanudar conserva la
+calibración, porque es la misma persona ante la misma cámara. La
+recalibración automática tras una ausencia queda desactivada
+(`*_recalibrate_after_absence_sec: 0`), ya que tomaría la referencia mientras
+el usuario se sienta, quizá mal colocado. Esa es justo la situación que este
+procedimiento evita.
+
+### 3.8.3 Verificación en vivo
+
+Recorrido completo con cámara real y el usuario delante (app servida en modo
+web solo para inspeccionar la interfaz; misma `main()`):
+
+| Paso | Observado |
+|---|---|
+| Arranque | "Sin calibrar"; *Calibrar* e *Iniciar* desactivados; **ninguna sesión creada** |
+| Usuario a 0.79 m | Distancia ✗ 0.79 m; *Calibrar* desactivado; "Ajusta el encuadre para calibrar" |
+| Usuario a 0.67 m | Tres comprobaciones ✓; "Listo para calibrar"; *Calibrar* habilitado |
+| *Calibrar* | Cuenta atrás, luego "Midiendo… N%"; botón convertido en *Cancelar* |
+| El usuario se alejó a 0.73 m | Medición **reiniciada** con motivo "demasiado lejos (0.73 m)" |
+| Fin | θc neutro **46.7°** (rango intercuartílico 4.3°), EAR base 0.184 → umbral **0.120**, distancia media 0.66 m |
+| *Iniciar seguimiento* | "Monitoreando"; Δθc ≈ **0.7°** con el usuario recto (antes: 35–45° absolutos) |
+| *Pausar* / *Reanudar* | Cámara liberada / reanudada; calibración conservada |
+
+La inspección visual detectó cuatro defectos que las pruebas automáticas no
+cubrían, ya corregidos:
+
+- "Iniciar seguimiento" parecía activo estando deshabilitado, por el color de
+  fondo explícito;
+- un recuadro rojo de error en el video antes del primer frame;
+- el EAR en rojo con la etiqueta "sin calibrar";
+- al pausar quedaba congelado el último fotograma, como si la cámara siguiera
+  encendida.
+
+También se vio que el motivo de un reinicio solo se mostraba durante los 3 s
+de cuenta atrás. Ahora sigue visible mientras se vuelve a medir.
+
+### 3.8.4 Observación
+
+El usuario osciló alrededor del límite superior del rango (0.66–0.73 m), lo
+que provocó un reinicio. Con el FOV de la cámara todavía **sin calibrar**
+(§D.1 de la checklist), las distancias estimadas pueden estar desplazadas, así
+que conviene calibrar el FOV antes de las sesiones con participantes para que
+el control de distancia exija el rango real.
+
+---
+
 ## 4. Resultados de Precisión
 
 ### 4.1 Protocolo de validación
@@ -901,8 +1004,8 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
    son intercambiables por configuración.
 6. **El umbral de EAR adaptativo es una decisión de ingeniería.** El ratio
    0.70 conserva la proporción de la literatura pero no se ha validado con
-   participantes; la calibración asume además que el usuario tiene los ojos
-   abiertos y mira a la pantalla durante los primeros 20 s. Declararlo así
+   participantes; la calibración (guiada, §3.8) asume además que el
+   usuario tiene los ojos abiertos y mira a la pantalla mientras se mide. Declararlo así
    en el Capítulo IV y reportar el umbral calibrado de cada participante
    (columna `metrics_log.ear_threshold`).
 7. **θc absoluto no es medible con una cámara frontal** (§3.7.2): su

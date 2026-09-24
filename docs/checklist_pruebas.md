@@ -1,18 +1,39 @@
 # Checklist de Pruebas Manuales
 
 > Lo que **no** puede automatizarse: todo lo que necesita una cámara real, una
-> persona delante o tus propios ojos. Los 201 tests de `pytest` no abren la
+> persona delante o tus propios ojos. Los 314 tests de `pytest` no abren la
 > cámara ni ejecutan MediaPipe por diseño, así que "todo en verde" no dice nada
 > sobre el FPS real, la precisión ni sobre si el icono de bandeja se ve.
 >
-> Orden recomendado: A → B → C → D. No pases a D (las mediciones del Capítulo
+> Orden recomendado: A.0 → A → B → C → D. No pases a D (las mediciones del Capítulo
 > IV) sin haber cerrado A y C, porque un fallo ahí invalida las mediciones.
 
 **Equipo de prueba:** _______________  **Fecha:** _______________
 
 ---
 
+## A.0 Calibración guiada e inicio (~5 min) — hazlo primero
+
+La app ya **no empieza a vigilar al abrirse**: arranca en vista previa.
+
+| # | Prueba | Resultado esperado | ✓ |
+|---|---|---|---|
+| 0a | Abre la app | Barra: **"Sin calibrar"**. *Calibrar* e *Iniciar seguimiento* desactivados. Tarjeta *Calibración* con 4 pasos y 3 comprobaciones | ☐ |
+| 0b | Colócate a más de 0.70 m | La comprobación de **distancia** sale ✗ con tu distancia; *Calibrar* sigue desactivado | ☐ |
+| 0c | Colócate a 0.50–0.70 m, de frente | Las tres ✓, **"Listo para calibrar"**, *Calibrar* se habilita | ☐ |
+| 0d | Pulsa **Calibrar** y quédate recto y quieto | "Prepárate… 3, 2, 1", luego "Midiendo… N%". El botón pasa a **Cancelar** | ☐ |
+| 0e | A mitad de la medición, aléjate 2 s | La medición **se reinicia** y dice por qué ("demasiado lejos…"), también mientras vuelve a medir | ☐ |
+| 0f | Deja que termine | **"✓ Calibración completada"** con postura neutra, umbral de ojo cerrado y distancia. Barra: *"Calibrado — listo para iniciar"*. Anota: neutro ____° · umbral ____ | ☐ |
+| 0g | Pulsa **Iniciar seguimiento** | Barra: **"Monitoreando"**. La tarjeta se oculta, aparece **Pausar** | ☐ |
+| 0h | Pulsa **Pausar** | *"En pausa — cámara apagada"*, **el piloto de la webcam se apaga**, el video muestra el aviso de pausa (no un fotograma congelado) | ☐ |
+| 0i | Pulsa **Reanudar** | Vuelve el video y el panel sigue mostrando **el mismo** "neutro NN°": la calibración se conservó | ☐ |
+| 0j | Durante el seguimiento, pulsa **Recalibrar** | Vuelve a calibrar. Tras *Iniciar*, `stats_report.py --list-sessions` muestra **dos sesiones**: la primera cerrada | ☐ |
+| 0k | Sin seguimiento activo, cierra la ventana | La app **se cierra** (no queda en la bandeja) | ☐ |
+
 ## A. Monitoreo en segundo plano y alertas (~15 min)
+
+> Antes de este bloque: calibra e inicia el seguimiento (A.0). Las alertas
+> solo existen en modo *Monitoreando*.
 
 Arranca con:
 
@@ -25,7 +46,7 @@ python -m src.ui.app_ui
 | # | Prueba | Resultado esperado | ✓ |
 |---|---|---|---|
 | 1 | Mira junto al reloj de Windows | Aparece el icono de la app (puede estar en el desplegable "mostrar iconos ocultos" — arrástralo a la barra) | ☐ |
-| 2 | Click derecho sobre el icono | Menú con **Abrir panel**, **Pausar monitoreo**, **Salir** | ☐ |
+| 2 | Click derecho sobre el icono | Menú con **Abrir panel**, **Pausar monitoreo**, **Recalibrar postura y ojos**, **Salir**. *Pausar* solo está activo durante el seguimiento | ☐ |
 | 3 | Cierra la ventana con la **X** | La ventana desaparece **pero el proceso sigue vivo**: el icono continúa ahí y sale un globo avisando | ☐ |
 | 4 | Con la ventana cerrada, comprueba el LED de la webcam | **Sigue encendido**: se está midiendo en segundo plano | ☐ |
 | 5 | Click en el icono (o *Abrir panel*) | Vuelve el panel, con el feed de video otra vez en marcha | ☐ |
@@ -36,7 +57,7 @@ python -m src.ui.app_ui
 |---|---|---|---|
 | 6 | Menú de bandeja → **Pausar monitoreo** | El **LED de la webcam se apaga** (la cámara se libera de verdad) | ☐ |
 | 7 | Vuelve a abrir el menú | La opción ahora dice **Reanudar monitoreo** | ☐ |
-| 8 | Estando pausado, abre el panel | El feed está congelado; no se acumulan métricas nuevas | ☐ |
+| 8 | Estando pausado, abre el panel | El video muestra **"Monitoreo en pausa — cámara apagada"** (no un fotograma congelado); no se acumulan métricas nuevas | ☐ |
 | 9 | **Reanudar monitoreo** | El LED vuelve, el feed se reanuda y los temporizadores del FSM arrancan **en 0.0 s** | ☐ |
 
 > El punto 6 es el que hace creíble la pausa: si el LED siguiera encendido, el
@@ -62,16 +83,16 @@ python -m src.ui.app_ui
 
 ### A.4 Calibración del EAR y alerta aguda
 
-> Desde el 2026-09-24 el umbral de ojo cerrado se calibra para cada usuario
-> durante los **primeros 20 s con la cara detectada**. Mira a la pantalla con
-> normalidad durante ese tiempo: si entornas los ojos, el umbral saldrá bajo.
+> El umbral de ojo cerrado se calibra para cada usuario en la **calibración
+> guiada** (A.0). Mira la pantalla con normalidad mientras mide: si entornas
+> los ojos, el umbral saldrá bajo.
 
 | # | Prueba | Resultado esperado | ✓ |
 |---|---|---|---|
-| 17a | Arranca la app, **siéntate recto** y mira a la pantalla con normalidad 20 s | La banda superior dice *"Calibrando… siéntate recto"*. Al terminar, la fila del EAR muestra **"umbral 0.1xx"** y la cervical **"Desviación cervical (Δθc) · neutro NN°"**. Anota ambos: _______ / _______ | ☐ |
+| 17a | Tras calibrar (A.0) e iniciar | La fila del EAR muestra **"umbral 0.1xx"** y la cervical **"Desviación cervical (Δθc) · neutro NN°"** | ☐ |
 | 17a2 | Sentado recto 1 min tras calibrar | Δθc se queda cerca de **0°** (verde) y **no** salen alertas de cabeza adelantada. *Antes marcaba 35–45° y avisaba cada 30 s* | ☐ |
 | 17a3 | Adelanta la cabeza a propósito 6 s | Δθc sube. **Anota hasta cuánto: _____°**. Si pasa de 15°, sale el aviso. *Este número es clave: ver D.3* | ☐ |
-| 17a4 | Bandeja → *Recalibrar postura y ojos* | Vuelve la banda de calibración y se repite | ☐ |
+| 17a4 | Bandeja → *Recalibrar postura y ojos* | Se abre el panel y empieza la calibración guiada | ☐ |
 | 17b | Tras calibrar, trabaja 2 min con normalidad (parpadeando) | PERCLOS se queda **bajo** (< 0.10) y **no** sale somnolencia. *Antes de la corrección daba ~0.65 y una alerta cada 30 s* | ☐ |
 | 17c | Cierra los ojos 4 s seguidos | Toast de **fatiga ocular** | ☐ |
 | 17 | Cierra los ojos de forma intermitente durante ~1 min (PERCLOS ≥ 15% de la ventana de 60 s) | Aparece el **modal bloqueante** de somnolencia, no un toast | ☐ |

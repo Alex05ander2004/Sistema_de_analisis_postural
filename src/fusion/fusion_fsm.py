@@ -103,6 +103,9 @@ class SensorMetrics:
     face_detected: bool = True
     pose_detected: bool = True
     pose_valid: bool = True   # landmarks visibles Y distancia dentro de rango
+    pose_visible: bool = True  # solo visibilidad de orejas y hombros (sin la
+                               # distancia): la calibración guiada informa de
+                               # cada problema de encuadre por separado
 
 
 # ---------------------------------------------------------------------------
@@ -878,11 +881,73 @@ class FusionFSM:
 
     def recalibrate_all(self) -> None:
         """
-        Recalibración pedida por el usuario (menú de bandeja): útil si se
-        calibró encorvado o si otra persona ocupa el puesto.
+        Descarta la postura neutra y el EAR calibrados, para volver a medirlos
+        (calibración guiada, o si otra persona ocupa el puesto).
         """
         self.recalibrate_posture()
         self.recalibrate_ear()
+
+    # ------------------------------------------------------------------
+    # Calibración guiada
+    # ------------------------------------------------------------------
+
+    @property
+    def needs_calibration(self) -> bool:
+        """True si falta alguna calibración para poder evaluar alertas."""
+        return self.posture_calibrating or self.ear_calibrating
+
+    def feed_calibration(self, metrics: SensorMetrics) -> None:
+        """
+        Alimenta SOLO los calibradores, sin evaluar ninguna alerta.
+
+        La usa la calibración guiada, que ya ha comprobado el encuadre antes
+        de llamar. Se separa de update() porque durante la calibración el
+        usuario está siguiendo instrucciones: sus métricas describen la
+        postura de referencia, no un riesgo, y no deben tocar ni los
+        temporizadores ni la bitácora.
+        """
+        now = metrics.monotonic
+        pc = self._posture_calibrator
+        if (pc is not None and not pc.is_calibrated
+                and metrics.pose_detected and metrics.pose_valid):
+            pc.update(metrics.cervical_angle, now)
+
+        ec = self._ear_calibrator
+        if ec is not None and not ec.is_calibrated and metrics.face_detected:
+            if ec.update(metrics.ear_avg, now):
+                self.blink_analyzer.ear_threshold = ec.threshold
+
+    def calibration_progress(self, now: Optional[float] = None) -> dict:
+        """Progreso [0, 1] de cada calibración; 1.0 si ese modo no calibra."""
+        if now is None:
+            now = self._clock()
+        pc, ec = self._posture_calibrator, self._ear_calibrator
+        return {
+            "posture": pc.progress(now) if pc is not None else 1.0,
+            "ear":     ec.progress(now) if ec is not None else 1.0,
+            "posture_done": pc is None or pc.is_calibrated,
+            "ear_done":     ec is None or ec.is_calibrated,
+        }
+
+    def reset_timers(self) -> None:
+        """
+        Reinicia temporizadores, PERCLOS y cooldowns **conservando la
+        calibración**.
+
+        Es lo que corresponde al reanudar tras una pausa o al empezar el
+        seguimiento: la racha anterior describe una postura que ya no está
+        vigente, pero la persona y la cámara son las mismas. Borrar también
+        la calibración (reset_all) obligaría a recalibrar en silencio, con el
+        usuario quizá mal sentado — justo lo que la calibración guiada evita.
+        """
+        self._timer_cervical.reset()
+        self._timer_shoulder.reset()
+        self._timer_ear.reset()
+        self._timer_yawn.reset()
+        self.blink_analyzer.reset()
+        self._last_alert.clear()
+        self._face_last_seen = None
+        self._pose_last_seen = None
 
     # ------------------------------------------------------------------
 
@@ -909,6 +974,7 @@ class FusionFSM:
             # Una ausencia larga puede significar otra persona u otra
             # colocación de la cámara: la postura de referencia ya no vale.
             if (self._posture_calibrator is not None
+                    and self._posture_recalibrate_after > 0
                     and self._pose_last_seen is not None
                     and now - self._pose_last_seen > self._posture_recalibrate_after):
                 logger.info("Usuario ausente %.0f s: se recalibra la postura.",
@@ -959,6 +1025,7 @@ class FusionFSM:
             # Una ausencia larga de la cara puede significar otra persona:
             # la calibración del EAR ya no le corresponde.
             if (self._ear_calibrator is not None
+                    and self._ear_recalibrate_after > 0
                     and self._face_last_seen is not None
                     and now - self._face_last_seen > self._ear_recalibrate_after):
                 logger.info("Cara ausente %.0f s: se recalibra el EAR.",

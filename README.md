@@ -8,9 +8,9 @@
 ## ¿Qué hace este sistema?
 
 Detecta en **tiempo real** y **100% local** (sin nube):
-- 🔴 **Cabeza adelantada** — θc más de **15° por encima de tu postura neutra** (calibrada sentado recto en los primeros 20 s) durante > 5 s
+- 🔴 **Cabeza adelantada** — θc más de **15° por encima de tu postura neutra** (medida en la calibración guiada, sentado recto) durante > 5 s
 - 🟠 **Asimetría de hombros** — |ΔE| > 10° durante > 8 s
-- 👁️ **Fatiga ocular** — EAR por debajo del umbral **calibrado para cada usuario** (0.65 × su EAR de ojo abierto, medido en los primeros 20 s) durante > 3 s
+- 👁️ **Fatiga ocular** — EAR por debajo del umbral **calibrado para cada usuario** (0.65 × su EAR de ojo abierto, medido en la calibración guiada) durante > 3 s
 - 😴 **Bostezo** — apertura bucal (MAR) ≥ 0.45 durante > 3 s
 - 💤 **Somnolencia** — PERCLOS ≥ 15% en una ventana móvil de 60 s
 
@@ -35,21 +35,45 @@ usuario trabaja en otras aplicaciones:
 - **Pausar desde la bandeja libera la cámara** (`cv2.VideoCapture`), con lo que
   se apaga el piloto de la webcam. Para quien pausa porque entra en una
   videollamada, ese LED apagado es la única confirmación creíble de que no se
-  le está grabando. Al reanudar, los temporizadores arrancan de cero.
+  le está grabando. Al reanudar, los temporizadores arrancan de cero y la
+  calibración se conserva.
 
 Menú de bandeja: **Abrir panel** · **Pausar/Reanudar monitoreo** ·
 **Recalibrar postura y ojos** · **Salir**.
 
-### Calibración al arrancar (20 s)
+### Uso: calibrar, iniciar, pausar
 
-Al iniciar, el sistema mide **tu** postura neutra y **tu** ojo abierto, y a
-partir de ahí evalúa desviaciones respecto a ellos. La banda superior lo
-indica: *"Calibrando: siéntate recto y mira la pantalla con normalidad"*.
-**Si te calibras encorvado, esa postura pasa a ser tu "neutra"**: usa
-*Recalibrar postura y ojos* en la bandeja para repetirlo.
+La app **no empieza a vigilar al abrirse**. El flujo es:
 
-Por qué: con una sola cámara frontal, ni el θc absoluto ni el EAR absoluto son
-fiables (ver `docs/validation_report.md` §3.6 y §3.7). La profundidad `z` de
+```
+ Vista previa ──[Calibrar]──▶ Calibrando ──▶ Listo ──[Iniciar seguimiento]──▶ Monitoreando ⇄ En pausa
+```
+
+1. **Vista previa.** La cámara se enciende para que ajustes el encuadre, pero
+   no hay alertas ni se escribe nada en la bitácora. La tarjeta
+   *Calibración* comprueba en vivo **rostro**, **hombros visibles** y
+   **distancia 0.50–0.70 m**. El botón *Calibrar* solo se habilita cuando las
+   tres están en ✓.
+2. **Calibrando** (≈ 25 s). Cuenta atrás de 3 s para colocarte y 20 s de
+   medición: siéntate **recto, quieto y mirando la pantalla con
+   normalidad**. Si pierdes el encuadre más de 1 s, la medición se reinicia
+   y te dice por qué. Al terminar verás tu postura neutra, tu umbral de ojo
+   cerrado y la distancia media.
+3. **Iniciar seguimiento.** Empieza la sesión de la bitácora y las alertas.
+4. **Pausar / Reanudar.** Apaga la cámara (el piloto se apaga) **sin perder la
+   calibración**.
+5. **Recalibrar.** Si te calibraste mal sentado, o se sienta otra persona.
+   Durante el seguimiento cierra la sesión actual: **una sesión de la
+   bitácora = una calibración + un seguimiento**, de modo que en la
+   validación cada participante queda en su propia sesión.
+
+Cerrar la ventana **durante el seguimiento** la oculta en la bandeja; cerrarla
+**sin seguimiento activo** cierra la app, porque no hay nada que vigilar.
+
+Por qué se calibra: con una sola cámara frontal, ni el θc absoluto ni el EAR
+absoluto son fiables (ver `docs/validation_report.md` §3.6 y §3.7), así que
+ambos se miden respecto a ti. Y por qué la calibración es guiada y no
+automática: una referencia tomada mal sentado sesga toda la sesión (§3.8). La profundidad `z` de
 MediaPipe se mide desde la cadera, que queda fuera del encuadre, y marcaba
 ~48° a un usuario sentado recto; el umbral de EAR de la literatura clasificaba
 como cerrado el ojo abierto de otro.
@@ -200,7 +224,8 @@ postural-fatigue-system/
 │   │   ├── geometry.py       # θc, ΔE, EAR, MAR, distancia, visibilidad
 │   │   └── smoothing.py      # filtrado temporal (mediana + EMA)
 │   ├── fusion/
-│   │   └── fusion_fsm.py     # Máquina de estados multimodal
+│   │   ├── fusion_fsm.py     # Máquina de estados multimodal + calibradores
+│   │   └── guided_calibration.py # Calibración guiada (fases, encuadre, reinicios)
 │   ├── storage/
 │   │   └── history_logger.py # Bitácora SQLite
 │   ├── tools/                      # Todas aceptan --source -1 (autodetectar)
@@ -211,14 +236,15 @@ postural-fatigue-system/
 │   │   ├── transition_test.py      # Transición continua de postura
 │   │   └── benchmark_mediapipe.py  # Latencia REAL, secuencial vs. paralelo
 │   └── ui/
-│       ├── app_ui.py         # Entry point Flet + bandeja + segundo plano
+│       ├── app_ui.py         # Entry point: modos (vista previa/calibrar/seguir), bandeja
+│       ├── calibration_view.py # Tarjeta de calibración: pasos, comprobaciones, resultado
 │       ├── video_feed.py     # Feed Base64/JPEG
 │       ├── telemetry_panel.py# Dashboard semáforo + alertas recientes
 │       ├── alert_dispatcher.py # Elige el canal de cada alerta
 │       ├── toast_notifier.py # Notificación del SO (no intrusiva)
 │       ├── tray_icon.py      # Icono de bandeja (segundo plano)
 │       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
-├── tests/                    # 269 tests, ~23 s, sin cámara ni MediaPipe
+├── tests/                    # 314 tests, ~28 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
@@ -229,7 +255,8 @@ postural-fatigue-system/
 │   ├── test_background_alerts.py    # Enrutado de alertas, toast y bandeja
 │   ├── test_background_pipeline.py  # Segundo plano y pausa, con pipeline real
 │   ├── test_session_2026_09_24.py   # Regresiones de la 1.ª sesión real (EAR, distancia)
-│   └── test_posture_reference.py    # θc relativo, indicador 2D, notificaciones
+│   ├── test_posture_reference.py    # θc relativo, indicador 2D, notificaciones
+│   └── test_guided_calibration.py   # Calibración guiada y modos de la app
 └── docs/
     ├── checklist_pruebas.md             # Pruebas manuales (cámara, bandeja, Cap. IV)
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
@@ -284,7 +311,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (269 tests, ~23 s, sin cámara ni MediaPipe)
+# Todos los tests (314 tests, ~28 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -355,7 +382,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 269/269 |
+| Tests | 100% verde | `pytest tests/` | ✅ 314/314 |
 
 ---
 

@@ -65,14 +65,23 @@ class VideoFeed:
         self.jpeg_quality = jpeg_quality
         self.overlay_info = overlay_info
 
+        # Oculta hasta el primer frame: un ft.Image sin `src` ni
+        # `src_base64` se pinta como un recuadro rojo de error ("Image must
+        # have either src or src_base64 specified") encima del placeholder
+        # mientras la cámara arranca.
         self._image = ft.Image(
             width=width,
             height=height,
             fit=ft.ImageFit.CONTAIN,
             border_radius=ft.border_radius.all(10),
+            visible=False,
         )
 
         # Placeholder mientras no hay frame
+        self._placeholder_icon = ft.Icon(ft.icons.VIDEOCAM_OFF_OUTLINED,
+                                         color=ft.colors.WHITE24, size=48)
+        self._placeholder_text = ft.Text("Iniciando cámara…",
+                                         color=ft.colors.WHITE38, size=14)
         self._placeholder = ft.Container(
             width=width,
             height=height,
@@ -80,10 +89,8 @@ class VideoFeed:
             border_radius=10,
             content=ft.Column(
                 [
-                    ft.Icon(ft.icons.VIDEOCAM_OFF_OUTLINED,
-                            color=ft.colors.WHITE24, size=48),
-                    ft.Text("Iniciando cámara…",
-                            color=ft.colors.WHITE38, size=14),
+                    self._placeholder_icon,
+                    self._placeholder_text,
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -141,9 +148,10 @@ class VideoFeed:
         self._image.src_base64 = b64_str
         self._frame_count += 1
 
-        # Ocultar placeholder al recibir el primer frame
+        # Primer frame: se cambia el placeholder por la imagen
         if self._frame_count == 1:
             self._placeholder.visible = False
+            self._image.visible = True
 
     def update_frame(self, frame_bgr: np.ndarray, fps: float = 0.0) -> None:
         """
@@ -154,10 +162,28 @@ class VideoFeed:
         """
         self.set_encoded(self.encode(frame_bgr, fps))
 
-    def show_no_signal(self) -> None:
+    def show_paused(self) -> None:
+        """
+        Sustituye el último frame por un aviso de pausa.
+
+        Sin esto, al pausar quedaba congelado en pantalla el último fotograma:
+        parecía que la cámara seguía activa, justo lo contrario de lo que la
+        pausa debe transmitir. El siguiente frame, al reanudar, lo retira.
+        """
+        self._placeholder_icon.name = ft.icons.PAUSE_CIRCLE_OUTLINE
+        self._placeholder_text.value = "Monitoreo en pausa — cámara apagada"
+        self.show_no_signal(keep_text=True)
+
+    def show_no_signal(self, keep_text: bool = False) -> None:
         """Muestra el placeholder de 'sin señal'."""
+        if not keep_text:
+            self._placeholder_icon.name = ft.icons.VIDEOCAM_OFF_OUTLINED
+            self._placeholder_text.value = "Iniciando cámara…"
         self._placeholder.visible = True
+        self._image.visible = False
         self._image.src_base64 = None
+        self._frame_count = 0
+        self._last_b64 = None
 
     @staticmethod
     def _draw_overlay(frame: np.ndarray, fps: float) -> np.ndarray:

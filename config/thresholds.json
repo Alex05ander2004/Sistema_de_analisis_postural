@@ -17,8 +17,8 @@
     "posture_calibration_sec": 20.0,
     "posture_calibration_max_iqr_deg": 15.0,
     "_posture_calibration_comment": "Segundos con pose válida para fijar la postura neutra (mediana de θc). Si el rango intercuartílico supera posture_calibration_max_iqr_deg la postura no fue estable y la calibración se repite. SUPONE QUE EL USUARIO ESTÁ SENTADO RECTO: la interfaz lo pide, y el menú de bandeja permite 'Recalibrar postura y ojos'.",
-    "posture_recalibrate_after_absence_sec": 30.0,
-    "_posture_recalibrate_comment": "Sin pose válida más de este tiempo, la postura de referencia se recalibra (puede ser otra persona o haberse movido la cámara). También al reanudar tras una pausa.",
+    "posture_recalibrate_after_absence_sec": 0,
+    "_posture_recalibrate_comment": "0 = desactivado. Con la calibración guiada (sección 'calibration'), recalibrar es siempre una acción explícita del usuario: botón 'Recalibrar' o bandeja. Recalibrar en silencio tras una ausencia tomaría la referencia mientras el usuario se sienta, quizá mal colocado, que es justo el fallo que la calibración guiada evita. Poner un valor > 0 (segundos) restaura la recalibración automática.",
     "cervical_angle_max_deg": 30.0,
     "_cervical_angle_max_deg_comment": "Solo se usa con cervical_mode='absolute'. Antes 15.0 (literatura). Ajustado a 30.0 por criterio clínico del experto (30° o menos = aceptable) — ver docs/expert_interview_protocol.md Bloque A1. Con la geometría corregida, 30° corresponde a ~12 cm de desplazamiento anterior de la cabeza en un adulto medio.",
     "cervical_alert_window_sec": 5.0,
@@ -40,8 +40,8 @@
     "_ear_calibration_sec_comment": "Segundos con cara detectada para estimar el EAR de ojo abierto. Se usa la mediana, que es insensible al 5-8% del tiempo que el ojo pasa cerrado por parpadeo normal. Durante la calibración NO se evalúan fatiga ocular ni PERCLOS.",
     "ear_threshold_bounds": [0.10, 0.25],
     "_ear_threshold_bounds_comment": "Límites del umbral calibrado, para que una calibración anómala no produzca un umbral absurdo. Si la línea base cae fuera de [0.12, 0.45] la calibración se descarta y se repite.",
-    "ear_recalibrate_after_absence_sec": 30.0,
-    "_ear_recalibrate_after_absence_sec_comment": "Si la cara desaparece más de este tiempo se recalibra (puede ser otra persona). También se recalibra al reanudar tras una pausa.",
+    "ear_recalibrate_after_absence_sec": 0,
+    "_ear_recalibrate_after_absence_sec_comment": "0 = desactivado, por el mismo motivo que posture_recalibrate_after_absence_sec: con la calibración guiada, recalibrar es explícito. Pausar y reanudar tampoco recalibra: es la misma persona ante la misma cámara.",
     "ear_alert_window_sec": 3.0,
     "blink_min_ms": 100,
     "blink_max_ms": 400,
@@ -97,6 +97,13 @@
     "_face_refine_landmarks_comment": "Desactivado por coste, NO porque no afecte a las métricas. CORRECCIÓN 2026-09-24: la justificación anterior (validation_report §3.1c, optimización 4) decía que solo añadía landmarks del iris que ninguna métrica usa; es falso, según la documentación de MediaPipe refina las coordenadas alrededor de los OJOS y los LABIOS, que son los puntos del EAR y del MAR. Se probó reactivarlo: la línea base de EAR de ojo abierto no cambió (0.200 con false, 0.203 con true) y el FPS bajó de ~22 a ~15 (observación en una sola prueba, no medición controlada). El desplazamiento del EAR lo corrige la calibración adaptativa (fatigue.ear_threshold_mode), no este parámetro. Medir ambos valores con benchmark_mediapipe.py en la sesión D.2 y declarar el elegido.",
     "face_draw_mode": "metrics",
     "_face_draw_mode_comment": "'metrics' dibuja solo los 12 puntos de ojos y 4 de boca que entran en el EAR/MAR (~16 primitivas). 'contours' dibuja los contornos faciales (~130 líneas). 'tesselation' dibuja la malla completa (~2600 segmentos por frame): cuesta más que la propia inferencia de Face Mesh y no aporta ninguna información a las métricas — usar solo para capturas de pantalla del documento."
+  },
+
+  "calibration": {
+    "countdown_sec": 3.0,
+    "framing_grace_sec": 1.0,
+    "timeout_sec": 60.0,
+    "_comment": "Calibración guiada (src/fusion/guided_calibration.py). La app arranca en vista previa: el usuario ajusta el encuadre, pulsa 'Calibrar' (solo habilitado con rostro, hombros y distancia correctos), y tras una cuenta atrás de countdown_sec se miden la postura neutra y el EAR de ojo abierto. Si el encuadre se pierde más de framing_grace_sec la medición se reinicia (una referencia que mezcla dos posturas no representa ninguna). Si en timeout_sec no se completa, falla con un motivo. El seguimiento solo empieza al pulsar 'Iniciar'. Una sesión de la bitácora = una calibración + un seguimiento."
   },
 
   "alerts": {

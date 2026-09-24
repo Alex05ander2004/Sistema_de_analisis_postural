@@ -72,10 +72,14 @@ from src.vision.geometry import (
     landmarks_visible,
 )
 from src.fusion.fusion_fsm import FusionFSM, SensorMetrics
+from src.fusion.guided_calibration import (
+    DONE as CALIB_DONE, FAILED as CALIB_FAILED, GuidedCalibration,
+)
 from src.storage.history_logger import HistoryLogger
 from src.ui.video_feed import VideoFeed
 from src.ui.telemetry_panel import TelemetryPanel
 from src.ui.alert_notifier import AlertNotifier
+from src.ui.calibration_view import CalibrationView
 from src.ui.alert_dispatcher import AlertDispatcher
 from src.ui.toast_notifier import ToastNotifier
 from src.ui.tray_icon import TrayIcon
@@ -119,6 +123,8 @@ class AppState:
     fps: float = 0.0
     timer_status: dict = field(default_factory=dict)
     setup_hint: str = ""
+    mode: str = "monitoring"          # ver InferenceThread (modos de la app)
+    calibration: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +150,24 @@ class InferenceThread(threading.Thread):
     y la bitácora siguen a plena velocidad: el ahorro no afecta a ninguna
     medición del Capítulo IV.
 
+    Modos de la aplicación
+    ----------------------
+        preview      cámara y métricas activas para guiar el encuadre, pero
+                     sin alertas ni bitácora
+        calibrating  calibración guiada (ver src/fusion/guided_calibration.py)
+        ready        calibrado; esperando a que el usuario inicie
+        monitoring   seguimiento: FSM, alertas y bitácora
+
+    Las transiciones las pide la interfaz con request_calibration() /
+    request_start() y se aplican al inicio de la siguiente iteración de run(),
+    **en este hilo**: el FSM y los calibradores no tienen cerrojos, así que
+    nunca deben tocarse desde el hilo de la interfaz ni desde el de la bandeja.
+
+    Una sesión de la bitácora = una calibración + un seguimiento. Recalibrar
+    durante el seguimiento cierra la sesión en curso; la siguiente empieza al
+    pulsar Iniciar. En la validación con varios participantes, cada uno queda
+    así en su propia sesión.
+
     Pausa
     -----
     `pause()` **detiene la captura de verdad**, no solo el procesamiento: libera
@@ -158,7 +182,14 @@ class InferenceThread(threading.Thread):
                  state_queue: Queue,
                  on_alert,
                  video_feed: VideoFeed,
-                 log_metrics_every_n: int = 30):
+                 log_metrics_every_n: int = 30,
+                 start_mode: str = "monitoring"):
+        """
+        start_mode:
+            "monitoring" empieza a vigilar de inmediato (comportamiento
+            anterior; lo usan las pruebas y las herramientas). La app arranca
+            en "preview" y el usuario calibra e inicia desde la interfaz.
+        """
         super().__init__(name="InferenceThread", daemon=True)
         self._vt = video_thread
         self._thresholds = thresholds
@@ -174,7 +205,10 @@ class InferenceThread(threading.Thread):
         self._ui_visible = threading.Event()
         self._ui_visible.set()
         self._paused = threading.Event()
-        self._recalibrate_requested = threading.Event()
+        if start_mode not in ("monitoring", "preview"):
+            raise ValueError("start_mode debe ser 'monitoring' o 'preview'")
+        self._mode = start_mode
+        self._commands: Queue = Queue()
 
         ui_cfg_early = thresholds.get("ui", {})
         self._skip_render_when_hidden = bool(
@@ -254,7 +288,18 @@ class InferenceThread(threading.Thread):
         self._db = HistoryLogger(
             db_path=str(PROJECT_ROOT / storage_cfg.get("db_path", "data/history.db"))
         )
-        self._db.start_session(notes="Sesión automática")
+        if start_mode == "monitoring":
+            self._db.start_session(notes="Sesión automática")
+
+        calib_cfg = thresholds.get("calibration", {})
+        self._calibration = GuidedCalibration(
+            self._fsm,
+            min_distance_m=self._min_dist,
+            max_distance_m=self._max_dist,
+            countdown_sec=calib_cfg.get("countdown_sec", 3.0),
+            framing_grace_sec=calib_cfg.get("framing_grace_sec", 1.0),
+            timeout_sec=calib_cfg.get("timeout_sec", 60.0),
+        )
 
         # FPS interno
         self._fps: float = 0.0
@@ -303,6 +348,11 @@ class InferenceThread(threading.Thread):
         Al reanudar se reinician los temporizadores del FSM y los filtros: la
         racha anterior a la pausa describe una postura que ya no está vigente,
         y arrastrarla dispararía una alerta por un intervalo que nadie midió.
+
+        La calibración se conserva: quien reanuda tras una llamada es la misma
+        persona ante la misma cámara. Recalibrar es siempre una acción
+        explícita (botón o bandeja), nunca algo que ocurra en silencio con el
+        usuario quizá mal sentado.
         """
         if paused == self._paused.is_set():
             return
@@ -315,7 +365,7 @@ class InferenceThread(threading.Thread):
                 logger.exception("No se pudo detener la captura al pausar.")
             logger.info("Monitoreo PAUSADO (cámara liberada).")
         else:
-            self._fsm.reset_all()
+            self._fsm.reset_timers()
             self._smoothers.reset()
             self._hint_state.reset()
             try:
@@ -324,6 +374,81 @@ class InferenceThread(threading.Thread):
                 logger.exception("No se pudo reanudar la captura.")
             self._paused.clear()
             logger.info("Monitoreo reanudado.")
+
+    # ------------------------------------------------------------------
+    # Modos: calibración guiada e inicio del seguimiento
+    # ------------------------------------------------------------------
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def can_start(self) -> bool:
+        """Se puede iniciar el seguimiento: calibrado, o nada que calibrar."""
+        return (self._mode == "ready"
+                or (self._mode == "preview"
+                    and not self._fsm.needs_calibration))
+
+    def request_calibration(self) -> None:
+        """Pide empezar (o repetir) la calibración guiada."""
+        self._commands.put("calibrate")
+
+    def request_start(self) -> None:
+        """Pide empezar el seguimiento; se ignora si falta calibrar."""
+        self._commands.put("start")
+
+    def cancel_calibration(self) -> None:
+        self._commands.put("cancel")
+
+    def _process_commands(self) -> None:
+        """Aplica las órdenes de la interfaz, en este hilo."""
+        while True:
+            try:
+                cmd = self._commands.get_nowait()
+            except Empty:
+                return
+            now = time.perf_counter()
+
+            if cmd == "calibrate":
+                if self._mode == "monitoring":
+                    # Una sesión = una calibración: la nueva referencia empieza
+                    # una sesión nueva al pulsar Iniciar.
+                    self._db.end_session()
+                if self._paused.is_set():
+                    self.set_paused(False)
+                self._smoothers.reset()
+                self._calibration.start(now)
+                self._mode = "calibrating"
+                logger.info("Modo: calibrando.")
+
+            elif cmd == "cancel" and self._mode == "calibrating":
+                self._calibration.cancel()
+                self._mode = "preview"
+                logger.info("Calibración cancelada; modo: vista previa.")
+
+            elif cmd == "start":
+                if not self.can_start:
+                    logger.info("Inicio ignorado: falta calibrar.")
+                    continue
+                self._db.start_session(notes=self._session_notes())
+                self._fsm.reset_timers()
+                self._smoothers.reset()
+                self._mode = "monitoring"
+                logger.info("Modo: monitoreando.")
+
+    def _session_notes(self) -> str:
+        """Resumen de la calibración vigente, guardado con la sesión."""
+        res = self._calibration.status.result or {}
+        partes = ["Calibración guiada"]
+        if res.get("cervical_baseline") is not None:
+            partes.append(f"θc neutro {res['cervical_baseline']:.1f}°")
+        if res.get("ear_threshold") is not None:
+            partes.append(f"EAR base {res.get('ear_baseline') or 0:.3f} "
+                          f"→ umbral {res['ear_threshold']:.3f}")
+        if res.get("distance_m") is not None:
+            partes.append(f"distancia {res['distance_m']:.2f} m")
+        return "; ".join(partes) if len(partes) > 1 else "Sin calibración"
 
     # ------------------------------------------------------------------
 
@@ -348,15 +473,16 @@ class InferenceThread(threading.Thread):
         logger.info("InferenceThread iniciado.")
         try:
             while not self._stop_event.is_set():
+                # Órdenes de la interfaz primero: "Recalibrar" también tiene
+                # que funcionar estando en pausa (reanuda la cámara).
+                self._process_commands()
+
                 # Pausado: la cámara está liberada, así que no hay nada que
                 # leer. Se espera sin quemar CPU y sin tocar el FSM.
                 if self._paused.is_set():
                     self._stop_event.wait(0.2)
                     continue
 
-                if self._recalibrate_requested.is_set():
-                    self._recalibrate_requested.clear()
-                    self._fsm.recalibrate_all()
 
                 frame = self._vt.get_frame(timeout=0.05)
                 if frame is None:
@@ -400,9 +526,25 @@ class InferenceThread(threading.Thread):
                 # --- Métricas ---------------------------------------------
                 metrics = self._build_metrics(pose_result, face_result)
 
-                # --- FSM ---------------------------------------------------
-                self._fsm.update(metrics)
+                # --- Según el modo -----------------------------------------
+                # Solo el seguimiento evalúa alertas y escribe en la bitácora.
+                # En vista previa y calibración las métricas sirven para guiar
+                # al usuario, no describen un riesgo.
+                if self._mode == "monitoring":
+                    self._fsm.update(metrics)
+                elif self._mode == "calibrating":
+                    st = self._calibration.step(metrics, metrics.monotonic)
+                    if st.phase == CALIB_DONE:
+                        self._mode = "ready"
+                        logger.info("Modo: listo para iniciar.")
+                    elif st.phase == CALIB_FAILED:
+                        self._mode = "preview"
+                else:
+                    # Mantener actualizadas las comprobaciones de encuadre que
+                    # habilitan el botón Calibrar.
+                    self._calibration.step(metrics, metrics.monotonic)
                 timer_status = self._fsm.get_timers_status()
+                timer_status["app_mode"] = self._mode
                 metrics.perclos = timer_status["perclos"]
                 metrics.blink_rate_per_min = timer_status["blink_rate_per_min"]
                 metrics.ear_threshold = timer_status.get("ear_threshold")
@@ -412,7 +554,8 @@ class InferenceThread(threading.Thread):
                     metrics.cervical_deviation = metrics.cervical_angle - baseline
 
                 # --- Bitácora de métricas (cada N frames) ------------------
-                if self._frame_n % self._log_metrics_every_n == 0:
+                if (self._mode == "monitoring"
+                        and self._frame_n % self._log_metrics_every_n == 0):
                     try:
                         self._db.log_metrics(metrics, fps=self._fps)
                     except Exception:
@@ -466,6 +609,8 @@ class InferenceThread(threading.Thread):
                         fps=self._fps,
                         timer_status=timer_status,
                         setup_hint=self._setup_hint(metrics),
+                        mode=self._mode,
+                        calibration=self._calibration.status.as_dict(),
                     ))
                 except Exception:
                     pass
@@ -521,6 +666,7 @@ class InferenceThread(threading.Thread):
                     metrics.neck_ratio = self._smoothers.update(
                         "neck_ratio", raw_neck)
 
+                metrics.pose_visible = visible
                 metrics.pose_valid = visible and self._distance_ok(metrics.distance_m)
             except Exception as e:
                 logger.debug("geometry error (pose): %s", e)
@@ -606,7 +752,7 @@ class InferenceThread(threading.Thread):
         # Con el encuadre correcto, la banda guía la calibración inicial:
         # la postura de referencia y el EAR se miden en los primeros segundos
         # y solo valen si el usuario está sentado recto mirando la pantalla.
-        if category == "":
+        if category == "" and self._mode == "monitoring":
             calib = self._calibration_hint()
             if calib:
                 return calib
@@ -650,7 +796,7 @@ class InferenceThread(threading.Thread):
         lo usa el hilo de inferencia sin cerrojos: el cambio real se hace al
         inicio de la siguiente iteración de run(), en el propio hilo.
         """
-        self._recalibrate_requested.set()
+        self.request_calibration()
         logger.info("Recalibración solicitada por el usuario.")
 
     def stop(self):
@@ -755,6 +901,9 @@ def main(page: ft.Page):
         state_queue=state_queue,
         on_alert=on_alert_fired,
         video_feed=video_feed,
+        # La app ya no empieza a vigilar al abrirse: el usuario ajusta el
+        # encuadre, calibra y pulsa Iniciar. Ver InferenceThread (modos).
+        start_mode="preview",
     )
 
     _running = {"value": True}
@@ -786,6 +935,135 @@ def main(page: ft.Page):
         border=ft.border.only(bottom=ft.BorderSide(1, "#1E1E3A")),
     )
 
+    # ----------------------------------------------------------------
+    # Barra de control: estado + Calibrar / Iniciar / Pausar
+    # ----------------------------------------------------------------
+    post_cfg = thresholds.get("postural", {})
+    calibration_view = CalibrationView(
+        min_distance_m=cam_cfg.get("min_distance_m", 0.50),
+        max_distance_m=cam_cfg.get("max_distance_m", 0.70),
+        calibration_sec=post_cfg.get("posture_calibration_sec", 20.0),
+    )
+
+    status_dot = ft.Container(width=10, height=10, border_radius=5,
+                              bgcolor="#555555")
+    status_text = ft.Text("Sin calibrar", size=13, color=ft.colors.WHITE,
+                          weight=ft.FontWeight.W_600)
+
+    def _on_calibrate_click(_):
+        if inference_thread.mode == "calibrating":
+            inference_thread.cancel_calibration()
+        else:
+            inference_thread.request_calibration()
+
+    def _on_start_click(_):
+        inference_thread.request_start()
+
+    def _on_pause_click(_):
+        paused = not inference_thread.is_paused
+        inference_thread.set_paused(paused)
+        if tray is not None:
+            tray.set_paused(paused)
+        _refresh_controls(force=True)
+
+    btn_calibrate = ft.ElevatedButton(
+        "Calibrar", icon=ft.icons.TUNE, on_click=_on_calibrate_click,
+        disabled=True,
+        tooltip="Mide tu postura neutra y tu ojo abierto (≈20 s)",
+    )
+    btn_start = ft.ElevatedButton(
+        "Iniciar seguimiento", icon=ft.icons.PLAY_ARROW,
+        on_click=_on_start_click, disabled=True,
+        tooltip="Empieza a vigilar tu postura y fatiga",
+    )
+    btn_pause = ft.OutlinedButton(
+        "Pausar", icon=ft.icons.PAUSE, on_click=_on_pause_click,
+        visible=False,
+        tooltip="Detiene la cámara (el piloto se apaga) sin perder la calibración",
+    )
+    control_bar = ft.Container(
+        content=ft.Row([
+            status_dot, status_text, ft.Container(expand=True),
+            btn_calibrate, btn_start, btn_pause,
+        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor="#16162A",
+        border=ft.border.all(1, "#2A2A4A"),
+        border_radius=10,
+        padding=ft.padding.symmetric(vertical=8, horizontal=14),
+    )
+
+    _ui = {"calibration": {}, "signature": None}
+
+    def _refresh_controls(force: bool = False) -> bool:
+        """
+        Ajusta la barra de control al modo del hilo de inferencia.
+
+        Se llama en cada vuelta del bucle de la UI, no solo cuando llega un
+        estado nuevo: en pausa no se publican estados, y los botones deben
+        reflejar igualmente el cambio. Devuelve True si algo cambió.
+        """
+        mode = inference_thread.mode
+        paused = inference_thread.is_paused
+        calib = _ui["calibration"]
+        checks_ok = bool(calib.get("checks", {}).get("ok"))
+        phase = calib.get("phase", "idle")
+        can_start = inference_thread.can_start
+
+        signature = (mode, paused, checks_ok, phase, can_start)
+        if not force and signature == _ui["signature"]:
+            return False
+        _ui["signature"] = signature
+
+        if mode == "monitoring" and paused:
+            status_dot.bgcolor, status_text.value = "#FFAA00", "En pausa — cámara apagada"
+        elif mode == "monitoring":
+            status_dot.bgcolor, status_text.value = "#00C853", "Monitoreando"
+        elif mode == "calibrating":
+            status_dot.bgcolor, status_text.value = "#FFAA00", "Calibrando…"
+        elif mode == "ready":
+            status_dot.bgcolor, status_text.value = "#00BCD4", "Calibrado — listo para iniciar"
+        else:
+            status_dot.bgcolor = "#555555"
+            status_text.value = ("Sin calibrar" if phase != "failed"
+                                 else "Calibración fallida — reinténtalo")
+
+        if mode == "calibrating":
+            btn_calibrate.text, btn_calibrate.icon = "Cancelar", ft.icons.CLOSE
+            btn_calibrate.disabled = False
+        else:
+            ya_calibrado = mode in ("ready", "monitoring") or phase == "done"
+            btn_calibrate.text = "Recalibrar" if ya_calibrado else "Calibrar"
+            btn_calibrate.icon = ft.icons.TUNE
+            # Solo se puede calibrar con el encuadre correcto: una referencia
+            # tomada mal encuadrado sesgaría toda la sesión. Durante el
+            # seguimiento se permite siempre (la calibración comprueba el
+            # encuadre por su cuenta y espera a que sea correcto).
+            btn_calibrate.disabled = not (checks_ok or mode == "monitoring")
+        btn_calibrate.tooltip = (
+            "Termina la sesión actual y vuelve a calibrar"
+            if mode == "monitoring" else
+            "Mide tu postura neutra y tu ojo abierto (≈20 s)")
+
+        btn_start.visible = mode != "monitoring"
+        btn_start.disabled = not can_start
+        # Flet mantiene un bgcolor explícito aunque el botón esté
+        # deshabilitado: sin esto, "Iniciar" parecía activo sin calibrar.
+        btn_start.bgcolor = "#00BCD4" if can_start else None
+        btn_start.color = "#0A0A16" if can_start else None
+
+        if mode == "monitoring" and paused:
+            video_feed.show_paused()
+
+        btn_pause.visible = mode == "monitoring"
+        btn_pause.text = "Reanudar" if paused else "Pausar"
+        btn_pause.icon = ft.icons.PLAY_ARROW if paused else ft.icons.PAUSE
+
+        if tray is not None:
+            if tray.is_paused != paused:
+                tray.set_paused(paused)
+            tray.refresh_menu()
+        return True
+
     # Banda de ayuda de encuadre: aparece solo cuando hay algo que corregir.
     setup_banner_text = ft.Text("", size=12, color="#0A0A16",
                                 weight=ft.FontWeight.W_600)
@@ -802,6 +1080,7 @@ def main(page: ft.Page):
 
     video_container = ft.Container(
         content=ft.Column([
+            control_bar,
             setup_banner,
             ft.Container(
                 content=video_feed.build(),
@@ -832,8 +1111,9 @@ def main(page: ft.Page):
     )
 
     sidebar = ft.Container(
-        content=ft.Column([telemetry_panel.build()],
-                          scroll=ft.ScrollMode.AUTO, spacing=0),
+        content=ft.Column([calibration_view.build(),
+                           telemetry_panel.build()],
+                          scroll=ft.ScrollMode.AUTO, spacing=10),
         expand=2,
         padding=ft.padding.only(top=16, right=16, bottom=16),
         bgcolor="#0A0A16",
@@ -863,9 +1143,15 @@ def main(page: ft.Page):
                                                timer_status=state.timer_status)
                     setup_banner.visible = bool(state.setup_hint)
                     setup_banner_text.value = state.setup_hint
+                    _ui["calibration"] = state.calibration or {}
+                    calibration_view.update(_ui["calibration"], state.mode)
+                    _refresh_controls()
                     page.update()
                 except Empty:
-                    pass
+                    # Sin estado nuevo (p. ej. en pausa): los botones deben
+                    # reflejar igualmente un cambio de modo.
+                    if _refresh_controls():
+                        page.update()
                 except Exception:
                     logger.exception("UI loop error")
 
@@ -951,11 +1237,18 @@ def main(page: ft.Page):
         except Exception:
             logger.debug("La ventana ya no estaba disponible al salir.")
 
+    def _on_tray_recalibrate():
+        # La calibración guiada necesita que el usuario vea las instrucciones
+        # y el encuadre: se abre el panel antes de empezar.
+        _show_window()
+        inference_thread.request_calibration()
+
     tray = TrayIcon(
         on_show=_show_window,
         on_toggle_pause=_on_tray_pause,
-        on_recalibrate=inference_thread.recalibrate,
+        on_recalibrate=_on_tray_recalibrate,
         on_quit=_on_tray_quit,
+        can_pause=lambda: inference_thread.mode == "monitoring",
     ) if background_enabled else None
 
     tray_active = tray.start() if tray is not None else False
@@ -981,7 +1274,11 @@ def main(page: ft.Page):
             # Solo se oculta si la bandeja está realmente activa: sin icono
             # visible, ocultar la ventana dejaría un proceso fantasma que el
             # usuario no puede recuperar ni cerrar.
-            if tray_active:
+            #
+            # Y solo si se está monitoreando: sin seguimiento activo no hay
+            # nada que vigilar en segundo plano, y dejar la cámara encendida
+            # tras cerrar la ventana no tendría ningún sentido para el usuario.
+            if tray_active and inference_thread.mode == "monitoring":
                 _hide_window()
                 tray.notify(
                     "Monitoreo activo",

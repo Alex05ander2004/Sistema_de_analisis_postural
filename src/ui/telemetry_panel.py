@@ -76,6 +76,9 @@ def _traffic_color(value: float, warn_threshold: float,
             return "#00C853"
 
 
+_PENDING_GREY = "#555555"
+
+
 def _status_dot(color: str) -> ft.Container:
     """Circulito indicador de estado."""
     return ft.Container(
@@ -175,6 +178,19 @@ class MetricRow:
         self._value_text.color = ft.colors.WHITE38
         self._progress.value = 0
         self._progress.color = "#555555"
+
+    def update_neutral(self, value: float) -> None:
+        """
+        Muestra el valor sin semáforo (en gris). Para cuando todavía no hay
+        un umbral que dé sentido al color: antes de calibrar, el EAR se
+        pintaba en rojo contra el 0.21 fijo aunque el panel dijera
+        "sin calibrar".
+        """
+        self._dot.bgcolor = _PENDING_GREY
+        self._value_text.value = f"{value:.{self.decimals}f}"
+        self._value_text.color = ft.colors.WHITE54
+        self._progress.value = min(abs(value) / self.max_val, 1.0)
+        self._progress.color = _PENDING_GREY
 
     def update(self, value: float) -> None:
         """Actualiza la fila con el nuevo valor."""
@@ -493,9 +509,14 @@ class TelemetryPanel:
             return
 
         if timer_status.get("posture_calibrating"):
-            progreso = timer_status.get("posture_calibration_progress", 0.0)
-            self._row_cervical.set_label(
-                f"Postura · calibrando {progreso * 100:.0f}% (siéntate recto)")
+            # "Calibrando" solo mientras se mide de verdad; antes de pulsar
+            # Calibrar, en vista previa, falta calibrar pero no se mide nada.
+            if timer_status.get("app_mode", "calibrating") == "calibrating":
+                progreso = timer_status.get("posture_calibration_progress", 0.0)
+                self._row_cervical.set_label(
+                    f"Postura · calibrando {progreso * 100:.0f}% (siéntate recto)")
+            else:
+                self._row_cervical.set_label("Postura · sin calibrar")
             self._row_cervical.update_pending()
             return
 
@@ -513,7 +534,7 @@ class TelemetryPanel:
         else:
             self._row_cervical.update(dev)
 
-    def _sync_ear_row(self, timer_status: dict) -> None:
+    def _sync_ear_row(self, timer_status: dict) -> bool:
         """
         Ajusta el semáforo del EAR al umbral vigente del usuario.
 
@@ -527,18 +548,22 @@ class TelemetryPanel:
         del usuario: "tu ojo está notablemente más cerrado que tu normal".
         """
         if timer_status.get("ear_calibrating"):
-            progreso = timer_status.get("ear_calibration_progress", 0.0)
-            self._row_ear.set_label(
-                f"EAR Promedio · calibrando {progreso * 100:.0f}%")
-            return
+            if timer_status.get("app_mode", "calibrating") == "calibrating":
+                progreso = timer_status.get("ear_calibration_progress", 0.0)
+                self._row_ear.set_label(
+                    f"EAR Promedio · calibrando {progreso * 100:.0f}%")
+            else:
+                self._row_ear.set_label("EAR Promedio · sin calibrar")
+            return False
 
         thr = timer_status.get("ear_threshold")
         if thr is None:
-            return
+            return True
         base = timer_status.get("ear_baseline")
         warn = (thr + base) / 2.0 if base else thr + 0.05
         self._row_ear.set_thresholds(warn_threshold=warn, alert_threshold=thr)
         self._row_ear.set_label(f"EAR Promedio · umbral {thr:.3f}")
+        return True
 
     def update(self, metrics, fps: float = 0.0,
                timer_status: Optional[dict] = None) -> None:
@@ -556,8 +581,10 @@ class TelemetryPanel:
         """
         self._sync_cervical_row(metrics, timer_status or {})
         self._row_shoulder.update(abs(metrics.shoulder_asymmetry))
-        self._sync_ear_row(timer_status or {})
-        self._row_ear.update(metrics.ear_avg)
+        if self._sync_ear_row(timer_status or {}):
+            self._row_ear.update(metrics.ear_avg)
+        else:
+            self._row_ear.update_neutral(metrics.ear_avg)
         self._row_mouth.update(metrics.mouth_opening)
 
         self._fps_text.value = f"{fps:.0f}"

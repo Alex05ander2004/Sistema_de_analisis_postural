@@ -79,7 +79,8 @@ class TrayIcon:
                  on_toggle_pause: Optional[Callable[[bool], None]] = None,
                  on_recalibrate: Optional[Callable[[], None]] = None,
                  on_quit: Optional[Callable[[], None]] = None,
-                 title: str = "Monitor Postural y Fatiga"):
+                 title: str = "Monitor Postural y Fatiga",
+                 can_pause: Optional[Callable[[], bool]] = None):
         """
         Parameters
         ----------
@@ -89,6 +90,9 @@ class TrayIcon:
             Recibe el nuevo estado de pausa (True = monitoreo detenido).
         on_quit:
             Cierre ordenado de la aplicación.
+        can_pause:
+            Devuelve True si la pausa tiene sentido ahora (solo durante el
+            seguimiento). Sin él, la opción está siempre activa.
         title:
             Texto del tooltip del icono.
         """
@@ -96,6 +100,7 @@ class TrayIcon:
         self._on_toggle_pause = on_toggle_pause
         self._on_recalibrate = on_recalibrate
         self._on_quit = on_quit
+        self._can_pause = can_pause
         self._title = title
 
         self._icon = None
@@ -161,7 +166,8 @@ class TrayIcon:
 
         return pystray.Menu(
             pystray.MenuItem("Abrir panel", self._handle_show, default=True),
-            pystray.MenuItem(_pause_label, self._handle_toggle_pause),
+            pystray.MenuItem(_pause_label, self._handle_toggle_pause,
+                             enabled=lambda _item: self.pause_enabled),
             pystray.MenuItem("Recalibrar postura y ojos",
                              self._handle_recalibrate),
             pystray.Menu.SEPARATOR,
@@ -191,6 +197,8 @@ class TrayIcon:
                 logger.exception("Error al restaurar la ventana desde la bandeja.")
 
     def _handle_toggle_pause(self, icon=None, item=None) -> None:
+        if not self.pause_enabled:
+            return
         self._paused = not self._paused
         if self._on_toggle_pause:
             try:
@@ -226,6 +234,23 @@ class TrayIcon:
         self.stop()
 
     # ------------------------------------------------------------------
+
+    @property
+    def pause_enabled(self) -> bool:
+        if self._can_pause is None:
+            return True
+        try:
+            return bool(self._can_pause())
+        except Exception:
+            return False
+
+    def refresh_menu(self) -> None:
+        """Reevalúa textos y opciones activas del menú (cambio de modo)."""
+        if self._icon is not None:
+            try:
+                self._icon.update_menu()
+            except Exception:
+                logger.debug("No se pudo refrescar el menú de la bandeja.")
 
     def set_paused(self, paused: bool) -> None:
         """Refleja en el menú un cambio de pausa originado fuera de la bandeja."""
