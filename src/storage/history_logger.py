@@ -135,6 +135,11 @@ class HistoryLogger:
             "perclos":            "REAL",
             "blink_rate_per_min": "REAL",
             "pose_valid":         "INTEGER",
+            # Umbral de ojo cerrado vigente en cada muestra. Con el umbral
+            # adaptativo cada sesión (y cada recalibración) tiene el suyo, y
+            # sin registrarlo un EAR o un PERCLOS guardado no se puede
+            # interpretar después. NULL = calibración en curso.
+            "ear_threshold":      "REAL",
         }
         for col, tipo in nuevas.items():
             if col not in existing:
@@ -245,14 +250,15 @@ class HistoryLogger:
             return
 
         distancia = getattr(metrics, "distance_m", None)
+        ear_thr = getattr(metrics, "ear_threshold", None)
         with self._cursor() as cur:
             cur.execute(
                 """INSERT INTO metrics_log
                    (session_id, timestamp, cervical_angle, shoulder_asymmetry,
                     ear_avg, mouth_opening, fps, face_detected, pose_detected,
                     cervical_sagittal, cervical_lateral, distance_m,
-                    perclos, blink_rate_per_min, pose_valid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    perclos, blink_rate_per_min, pose_valid, ear_threshold)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     self._session_id,
                     metrics.timestamp,
@@ -269,6 +275,7 @@ class HistoryLogger:
                     round(getattr(metrics, "perclos", 0.0), 4),
                     round(getattr(metrics, "blink_rate_per_min", 0.0), 2),
                     int(getattr(metrics, "pose_valid", True)),
+                    round(ear_thr, 4) if ear_thr is not None else None,
                 ),
             )
 

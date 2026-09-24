@@ -60,7 +60,7 @@
 | **Latencia total del pipeline (con MediaPipe)** | **< 50 ms** | **72.2 ms antes de optimizar; pendiente de re-medir (ver 3.1c)** | **⬜ Re-medición pendiente** |
 | Precisión de clasificación | ≥ 90% | Pendiente (validación con usuario/experto real) | ☐ Pendiente |
 | Tasa de falsos positivos | < 5% | 0% en pruebas automatizadas (`test_stress.py`, `test_integration_pipeline.py`) | ☑ Sí (solo en condiciones sintéticas) |
-| Cobertura de tests | — | 201 tests, 100% en verde (~24 s) | ☑ Sí |
+| Cobertura de tests | — | 235 tests, 100% en verde (~23 s) | ☑ Sí |
 | Uso de CPU | Estable | Sin deriva de latencia (-0.002 a -0.030 ms en 180 frames, geometry puro) | ☑ Sí |
 | Uso de RAM | Estable | 0.0 MB de crecimiento en 500 frames (geometry puro) | ☑ Sí |
 
@@ -150,7 +150,7 @@ medición anterior no había aislado porque estaban dentro de `process()`:
 | 1 | **Pose y Face en paralelo** (`ThreadPoolExecutor(2)`) | La latencia total era `pose + face`; ahora es `max(pose, face)` |
 | 2 | **Una sola conversión BGR→RGB** compartida por ambos modelos | Se hacía dos veces por frame, una dentro de cada `process()` |
 | 3 | **Dos `frame.copy()` eliminados** | Cada `process()` copiaba el frame completo para dibujar sobre él |
-| 4 | **`face_refine_landmarks` a `false`** | Añadía una pasada de red por frame (modelo de atención del iris) para producir 10 landmarks que **ninguna métrica de la tesis usa** |
+| 4 | **`face_refine_landmarks` a `false`** | Añade una pasada de red por frame. ⚠️ *Justificación original incorrecta, corregida el 2026-09-24:* se afirmó que solo producía 10 landmarks del iris que ninguna métrica usa. Según la documentación de MediaPipe, refina las coordenadas **alrededor de los ojos y los labios**, que son justo los puntos del EAR y del MAR. Se mantiene en `false` por coste (FPS ~22 → ~15 al activarlo, observación puntual) y porque no alteró la línea base del EAR (0.200 → 0.203). Ver §3.6 |
 | 5 | **Overlay facial de malla completa → solo los puntos medidos** | `FACEMESH_TESSELATION` dibuja ~2600 segmentos por frame con OpenCV en CPU: costaba más que la propia inferencia de Face Mesh |
 | 6 | **Codificación JPEG/Base64 movida al hilo de inferencia** | Se hacía en el event loop de Flet, bloqueando la UI ~2-4 ms por repintado |
 | 7 | **Overlay del FPS solo sobre su ROI** | Copiaba los 640×480 y hacía un `addWeighted` completo para oscurecer un rectángulo de 160×30 |
@@ -418,6 +418,149 @@ mataba el hilo de inferencia. Corregido y cubierto por
 
 ---
 
+## 3.6 Primera sesión con cámara real (2026-09-24) y correcciones derivadas
+
+*(Sesión exploratoria de 3.3 min, un usuario, código posterior a la auditoría
+geométrica del 2026-09-07. La base de datos se conserva en
+`data/archive/sesion_prueba_2026-09-24.db`.)*
+
+Es la primera ejecución completa del sistema sobre una persona real con la
+geometría corregida. Confirmó dos correcciones previas en hardware real y
+reveló cuatro fallos que las pruebas automatizadas no podían detectar, porque
+dependen de la distribución real de las señales.
+
+### 3.6.1 Confirmado en hardware real
+
+| Comprobación | Resultado |
+|---|---|
+| `sessions.ended_at` se rellena al cerrar | ✅ 3.3 min registrados (antes quedaba NULL) |
+| La tabla `events` recibe alertas | ✅ 10 eventos (antes quedaba vacía) |
+| FPS del pipeline paralelo, con render activo | **mediana 22.4 FPS** (mín 14.3, máx 30.4) — primera cifra real tras las optimizaciones de §3.1c; **no sustituye** a la medición formal con `benchmark_mediapipe.py` |
+
+### 3.6.2 Fallo 1 — Umbral de EAR no transferible entre modelos de landmarks
+
+**Observado:** el usuario, con los ojos abiertos, recibió una alerta de
+somnolencia cada 30 s. El panel indicaba ojo cerrado el ~65% del tiempo.
+
+**Medido:**
+
+| | Valor |
+|---|---|
+| EAR con ojo **abierto** — mediana | **0.200** |
+| EAR — p10 / p90 | 0.164 / 0.237 |
+| Umbral fijo de la literatura | 0.21 |
+| Muestras clasificadas "ojo cerrado" con 0.21 | **63.9%** |
+| Alertas de somnolencia en 3.3 min | 6 (PERCLOS 0.46 → 0.73) |
+
+**Causa:** no es ruido sino un **desplazamiento sistemático de escala**. El
+umbral 0.21 (Soukupová & Čech, 2016) se definió sobre los 68 landmarks de
+dlib; Face Mesh sitúa los puntos del párpado en posiciones distintas del
+contorno, así que la escala del EAR no es transferible entre modelos. A eso se
+suman la variación anatómica entre personas y el ángulo de la cámara. Este
+riesgo ya figuraba como trabajo futuro en §7.3 ("el umbral único de 0.21
+ignora la variabilidad anatómica del ojo entre personas"); la sesión demuestra
+que no es un refinamiento opcional sino un requisito para que el indicador
+funcione.
+
+**Corrección — umbral adaptado a cada usuario** (`fatigue.ear_threshold_mode:
+"adaptive"`, `EarBaselineCalibrator` en `fusion_fsm.py`):
+
+1. Durante los primeros 20 s con cara detectada se estima el EAR de ojo
+   abierto como la **mediana** de las muestras. La mediana es insensible al
+   5–8% del tiempo que el ojo pasa cerrado por parpadeo normal.
+2. Umbral de ojo cerrado = 0.70 × línea base, acotado a [0.10, 0.25]. El 0.70
+   es la proporción que guarda el umbral de la literatura (~0.21) con el EAR de
+   ojo abierto habitual en dlib (~0.30): se conserva el criterio, pero se
+   aplica a la escala del propio usuario. **Es un valor de ingeniería,
+   PROVISIONAL, a validar en la sesión con participantes.**
+3. Mientras calibra, ni fatiga ocular ni PERCLOS se evalúan: todavía no hay un
+   umbral que signifique algo para esa persona.
+4. Se recalibra al reanudar tras una pausa y tras 30 s sin cara (puede ser
+   otra persona).
+5. Cada fila de `metrics_log` registra el umbral vigente (`ear_threshold`),
+   para que cualquier EAR o PERCLOS guardado sea interpretable después.
+
+**Verificación sobre los datos reales de la sesión** (las 83 muestras
+registradas, reproducidas a través del FSM):
+
+| Modo | Umbral | PERCLOS final | Alertas de somnolencia |
+|---|---|---|---|
+| Fijo | 0.210 | 0.77 | **6** (idénticas a las registradas) |
+| Adaptativo | 0.151 (calibrado) | 0.00 | **0** |
+
+Una segunda ejecución independiente calibró una línea base de **0.203** para
+el mismo usuario, consistente con la primera.
+
+El modo `fixed` se conserva, y es el valor por defecto en código para que una
+configuración sin la clave no cambie de criterio en silencio. Ambos modos
+pueden contrastarse en la validación.
+
+### 3.6.3 Fallo 2 — Estimación de distancia sin filtrar
+
+**Observado:** el aviso de encuadre aparecía y desaparecía constantemente con
+el usuario quieto.
+
+**Medido:** mediana 0.640 m (dentro del rango), pero 30 cruces del límite de
+0.70 m en 129 muestras consecutivas, y saltos aislados de hasta **3.51 m**.
+
+**Consecuencia oculta, más grave que el parpadeo del aviso:** los 10 frames
+con `pose_valid = 0` de la sesión se debieron **todos** a esos saltos de
+distancia. Y `pose_valid = 0` **reinicia los temporizadores de postura**. Es
+decir, un solo frame con un outlier de distancia borraba una racha de 4 s de
+cabeza adelantada, haciendo más difícil confirmar alertas posturales reales.
+
+**Causa:** la distancia se estima del ancho de hombros en píxeles —con el mismo
+jitter que ΔE, que ya se filtraba— pero era la única métrica que se usaba sin
+filtrar, y el aviso se decidía frame a frame.
+
+**Corrección:**
+
+1. La distancia pasa por el mismo filtro mediana (5) + EMA que las demás
+   métricas. La mediana elimina los outliers de un frame.
+2. Histéresis de 3 cm en los límites: el aviso "demasiado lejos" se activa al
+   superar 0.70 m pero solo se retira al bajar de 0.67 m.
+3. Retardo de confirmación (`DebouncedState`): el aviso solo aparece si el
+   problema persiste 1.5 s, y solo desaparece tras 1.0 s sin él.
+
+### 3.6.4 Fallo 3 — Modal atascado tras "Entendido"
+
+**Observado:** al pulsar "Entendido, voy a pausar", quedaba un recuadro vacío
+en mitad de la pantalla que no se podía cerrar.
+
+**Causa:** el cierre marcaba el diálogo como cerrado y lo retiraba del árbol de
+controles **en la misma actualización**. Flet envía solo "control eliminado";
+el cliente nunca recibe `open = False`, y en Flutter el diálogo es una ruta del
+Navigator que solo se cierra al recibirlo. La ruta quedaba huérfana. La propia
+API de Flet 0.24 lo confirma: `Page.close()` pone `open = False` y nunca retira
+el control.
+
+**Corrección:** un único diálogo reutilizado durante toda la vida de la app;
+cerrar es solo `open = False`. Resuelve también el crecimiento del overlay que
+motivaba la retirada. Nótese que en esta sesión el fallo 1 lo hacía muy
+visible: somnolencia (canal modal) cada 30 s.
+
+### 3.6.5 Fallo 4 — Traza de error en cada cierre forzado
+
+Detectado en la prueba de humo posterior, no en la sesión. Si el proceso
+termina sin pasar por "Salir" (cliente de Flet cerrado, Ctrl+C), el hilo de
+inferencia moría con `RuntimeError: cannot schedule new futures after
+shutdown`. Python apaga los `ThreadPoolExecutor` en `threading._shutdown()`,
+**antes** que los handlers de `atexit` donde vive la limpieza de la app. Los
+datos no se perdían (el `finally` cerraba la sesión), pero la traza parece un
+fallo en cualquier bitácora de validación. Ahora el hilo trata ese error como
+señal de cierre y termina limpiamente.
+
+### 3.6.6 Observación pendiente — θc elevado
+
+La sesión registró 4 alertas cervicales con θc entre 36° y 47°, y la prueba
+de humo una de 66°. No consta si el usuario adoptaba de verdad esa postura. Si
+estaba sentado con normalidad, apunta a la **posición de la cámara** (webcam
+de portátil por debajo de los ojos, que inclina la vista hacia arriba) y es
+exactamente lo que la re-medición de §4.4 con `calibration_mode.py` a la
+altura de los ojos debe aclarar. No se ha tocado el modelo de θc.
+
+---
+
 ## 4. Resultados de Precisión
 
 ### 4.1 Protocolo de validación
@@ -597,14 +740,20 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
    evidencia recogida con participantes de esta tesis. El Bloque E del
    protocolo v2 debería incorporar la comparación de ambos regímenes, que ahora
    son intercambiables por configuración.
-6. **La tasa de alertas efectivamente percibidas no se mide.** Con un toast, el
+6. **El umbral de EAR adaptativo es una decisión de ingeniería.** El ratio
+   0.70 conserva la proporción de la literatura pero no se ha validado con
+   participantes; la calibración asume además que el usuario tiene los ojos
+   abiertos y mira a la pantalla durante los primeros 20 s. Declararlo así
+   en el Capítulo IV y reportar el umbral calibrado de cada participante
+   (columna `metrics_log.ear_threshold`).
+7. **La tasa de alertas efectivamente percibidas no se mide.** Con un toast, el
    usuario puede no verlo. La tabla `events` registra alertas *emitidas*, no
    *atendidas*; la diferencia importa para interpretar cualquier cifra de
    eficacia del sistema.
-7. **Los umbrales provienen de un único informante experto** (N=1), y varios de ellos quedaron sin valor clínico: las dos ventanas temporales posturales, el cooldown entre alertas y los umbrales de aviso (semáforo amarillo, hoy cableado al 70% del rojo sin base clínica). El protocolo v2 (`docs/expert_interview_protocol_v2.md`) los aborda y propone ampliar a tres informantes en el módulo postural.
-8. **Umbrales que siguen siendo de literatura o de ingeniería, no validados clínicamente por el experto entrevistado:** EAR (0.21, literatura de visión artificial), PERCLOS (0.15/60 s, literatura de conducción), MAR de bostezo (0.45, estimación de ingeniería sin fuente). Deben declararse como tales en el Capítulo IV.
-9. **Ambigüedad de escala en el umbral cervical.** Al experto se le pidió un valor en la escala θc advirtiéndole que θc ≈ 90° − CVA, y respondió "de 30° para abajo". No consta si razonaba en θc o en CVA, y el significado clínico es opuesto. El bloque A0 del protocolo v2 lo resuelve con una escala visual.
-10. **La estimación de distancia usa una media poblacional** de ancho biacromial (0.38 m) y un FOV de cámara asumido (60°). Es suficiente para avisar del encuadre, pero debe calibrarse con una medición con cinta métrica antes de reportar distancias en el Capítulo IV (`camera.horizontal_fov_deg`).
+8. **Los umbrales provienen de un único informante experto** (N=1), y varios de ellos quedaron sin valor clínico: las dos ventanas temporales posturales, el cooldown entre alertas y los umbrales de aviso (semáforo amarillo, hoy cableado al 70% del rojo sin base clínica). El protocolo v2 (`docs/expert_interview_protocol_v2.md`) los aborda y propone ampliar a tres informantes en el módulo postural.
+9. **Umbrales que siguen siendo de literatura o de ingeniería, no validados clínicamente por el experto entrevistado:** EAR (0.21, literatura de visión artificial), PERCLOS (0.15/60 s, literatura de conducción), MAR de bostezo (0.45, estimación de ingeniería sin fuente). Deben declararse como tales en el Capítulo IV.
+10. **Ambigüedad de escala en el umbral cervical.** Al experto se le pidió un valor en la escala θc advirtiéndole que θc ≈ 90° − CVA, y respondió "de 30° para abajo". No consta si razonaba en θc o en CVA, y el significado clínico es opuesto. El bloque A0 del protocolo v2 lo resuelve con una escala visual.
+11. **La estimación de distancia usa una media poblacional** de ancho biacromial (0.38 m) y un FOV de cámara asumido (60°). Es suficiente para avisar del encuadre, pero debe calibrarse con una medición con cinta métrica antes de reportar distancias en el Capítulo IV (`camera.horizontal_fov_deg`).
 
 ### 7.3 Trabajo Futuro
 

@@ -39,6 +39,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from statistics import median
 from typing import Callable, Deque, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,8 @@ class SensorMetrics:
     distance_m: Optional[float] = None  # distancia estimada cámara-usuario
     perclos: float = 0.0               # fracción de tiempo con ojos cerrados
     blink_rate_per_min: float = 0.0    # parpadeos por minuto
+    ear_threshold: Optional[float] = None  # umbral de ojo cerrado vigente
+                                           # (None = calibrando)
 
     timestamp: float = field(default_factory=time.time)
     monotonic: float = field(default_factory=time.perf_counter)
@@ -370,6 +373,150 @@ class BlinkAnalyzer:
 
 
 # ---------------------------------------------------------------------------
+# Umbral de ojo cerrado adaptado a cada usuario
+# ---------------------------------------------------------------------------
+
+# Rango de EAR de ojo abierto que se acepta como calibración válida. Fuera de
+# él la calibración se descarta y se repite: un valor así indica que durante
+# la calibración el usuario tenía los ojos entornados, miraba hacia otro lado
+# o la malla facial no estaba bien ajustada, y derivar un umbral de ahí sería
+# peor que no tenerlo.
+_VALID_BASELINE_RANGE = (0.12, 0.45)
+
+
+class EarBaselineCalibrator:
+    """
+    Calibra el EAR de ojo abierto de cada usuario y deriva de él su umbral de
+    ojo cerrado.
+
+    El problema que resuelve
+    ------------------------
+    En la sesión de prueba del 2026-09-24 el EAR del usuario con los ojos
+    **abiertos** tuvo una mediana de 0.200, por debajo del umbral fijo de
+    0.21. El sistema clasificó como "ojo cerrado" el 64% de las muestras y
+    disparó una alerta de somnolencia cada 30 s con el usuario despierto.
+
+    No es ruido: es un desplazamiento sistemático de la escala. El umbral
+    0.21 procede de Soukupová & Čech (2016), que lo definieron sobre los 68
+    landmarks de dlib. Face Mesh sitúa los puntos del párpado en posiciones
+    distintas del contorno, así que la escala del EAR no es transferible
+    entre modelos de landmarks. A eso se suma la variación anatómica entre
+    personas y el ángulo de la cámara (una webcam de portátil por debajo de
+    los ojos estrecha la hendidura palpebral aparente). La propia tesis ya
+    lo anotaba como trabajo futuro: "el umbral único de 0.21 ignora la
+    variabilidad anatómica del ojo entre personas".
+
+    Método
+    ------
+    1. Durante los primeros `calibration_sec` con cara detectada se acumulan
+       muestras de EAR.
+    2. La línea base es la **mediana**: con ~15-20 parpadeos por minuto el ojo
+       está cerrado un 5-8% del tiempo, y la mediana es insensible a esa
+       fracción, así que estima el EAR de ojo abierto aunque el usuario
+       parpadee con normalidad durante la calibración.
+    3. Umbral = `ratio` × línea base, acotado a `bounds`.
+
+    Con ratio = 0.70 y los datos reales de la sesión: línea base 0.200 →
+    umbral 0.140 → 2.4% de muestras "cerradas", compatible con parpadeo
+    normal, frente al 63.9% del umbral fijo. El 0.70 es la proporción que
+    guarda el umbral de la literatura (≈0.21) con el EAR de ojo abierto que
+    suele reportarse para dlib (≈0.30): se aplica la misma proporción, pero
+    sobre la línea base del propio usuario. Es un valor de ingeniería, a
+    declarar como tal en el Capítulo IV y a validar en la sesión real.
+
+    Recalibración
+    -------------
+    `reset()` la reinicia. El FSM lo hace al reanudar tras una pausa y tras
+    una ausencia prolongada de la cara, porque ambos casos pueden significar
+    otra persona u otra colocación de la cámara.
+    """
+
+    def __init__(self,
+                 calibration_sec: float = 20.0,
+                 ratio: float = 0.70,
+                 bounds: Tuple[float, float] = (0.10, 0.25),
+                 min_samples: int = 60):
+        if not 0.0 < ratio < 1.0:
+            raise ValueError("ratio debe estar en (0, 1)")
+        if bounds[0] >= bounds[1]:
+            raise ValueError("bounds debe ser (mínimo, máximo) con mínimo < máximo")
+        self.calibration_sec = calibration_sec
+        self.ratio = ratio
+        self.bounds = bounds
+        self.min_samples = min_samples
+
+        self._samples: list = []
+        self._started_at: Optional[float] = None
+        self._baseline: Optional[float] = None
+        self._threshold: Optional[float] = None
+
+    @property
+    def is_calibrated(self) -> bool:
+        return self._threshold is not None
+
+    @property
+    def baseline(self) -> Optional[float]:
+        """EAR de ojo abierto estimado, o None si aún no hay calibración."""
+        return self._baseline
+
+    @property
+    def threshold(self) -> Optional[float]:
+        """Umbral de ojo cerrado del usuario, o None si aún no hay calibración."""
+        return self._threshold
+
+    def progress(self, now: float) -> float:
+        """Fracción [0, 1] de la calibración completada, para la interfaz."""
+        if self.is_calibrated:
+            return 1.0
+        if self._started_at is None:
+            return 0.0
+        by_time = (now - self._started_at) / self.calibration_sec
+        by_count = len(self._samples) / self.min_samples
+        return max(0.0, min(1.0, min(by_time, by_count)))
+
+    def update(self, ear: float, now: float) -> bool:
+        """
+        Incorpora una muestra. Devuelve True solo en el frame en que la
+        calibración se completa, para que el FSM pueda reaccionar una vez.
+        """
+        if self.is_calibrated:
+            return False
+        if self._started_at is None:
+            self._started_at = now
+        self._samples.append(float(ear))
+
+        if (now - self._started_at < self.calibration_sec
+                or len(self._samples) < self.min_samples):
+            return False
+
+        baseline = median(self._samples)
+        lo, hi = _VALID_BASELINE_RANGE
+        if not lo <= baseline <= hi:
+            logger.warning(
+                "Calibración de EAR descartada: línea base %.3f fuera de "
+                "[%.2f, %.2f]. Se repite (¿ojos entornados, mirada desviada?).",
+                baseline, lo, hi)
+            self._samples.clear()
+            self._started_at = now
+            return False
+
+        self._baseline = baseline
+        self._threshold = min(max(self.ratio * baseline, self.bounds[0]),
+                              self.bounds[1])
+        self._samples.clear()
+        logger.info(
+            "EAR calibrado: línea base de ojo abierto %.3f -> umbral de ojo "
+            "cerrado %.3f (ratio %.2f)", baseline, self._threshold, self.ratio)
+        return True
+
+    def reset(self) -> None:
+        self._samples.clear()
+        self._started_at = None
+        self._baseline = None
+        self._threshold = None
+
+
+# ---------------------------------------------------------------------------
 # FSM principal
 # ---------------------------------------------------------------------------
 
@@ -437,13 +584,38 @@ class FusionFSM:
             clock=clock,
         )
 
-        # Análisis de parpadeo / PERCLOS
-        self._ear_threshold = fat.get("ear_threshold", 0.21)
+        # Umbral de ojo cerrado: fijo (literatura) o adaptado al usuario.
+        #
+        # El valor por defecto en CÓDIGO es "fixed", para que una
+        # configuración antigua sin esta clave conserve su comportamiento;
+        # config/thresholds.json activa "adaptive" explícitamente. Ver
+        # EarBaselineCalibrator para el porqué.
+        self._fixed_ear_threshold = fat.get("ear_threshold", 0.21)
+        mode = str(fat.get("ear_threshold_mode", "fixed")).lower()
+        if mode not in ("fixed", "adaptive"):
+            logger.warning("fatigue.ear_threshold_mode='%s' no es válido; "
+                           "usando 'fixed'.", mode)
+            mode = "fixed"
+        self._ear_mode = mode
+        self._ear_calibrator: Optional[EarBaselineCalibrator] = None
+        if mode == "adaptive":
+            bounds = fat.get("ear_threshold_bounds", [0.10, 0.25])
+            self._ear_calibrator = EarBaselineCalibrator(
+                calibration_sec=fat.get("ear_calibration_sec", 20.0),
+                ratio=fat.get("ear_adaptive_ratio", 0.70),
+                bounds=(float(bounds[0]), float(bounds[1])),
+            )
+        # Una ausencia de la cara más larga que esto fuerza a recalibrar:
+        # puede haberse sentado otra persona o haberse movido la cámara.
+        self._ear_recalibrate_after = fat.get(
+            "ear_recalibrate_after_absence_sec", 30.0)
+        self._face_last_seen: Optional[float] = None
+
         self._perclos_enabled = bool(fat.get("perclos_enabled", True))
         self._perclos_threshold = fat.get("perclos_threshold", 0.15)
         self._perclos_window_sec = fat.get("perclos_window_sec", 60.0)
         self.blink_analyzer = BlinkAnalyzer(
-            ear_threshold=self._ear_threshold,
+            ear_threshold=self._fixed_ear_threshold,
             blink_min_ms=blink_min_ms,
             blink_max_ms=blink_max_ms,
             window_sec=self._perclos_window_sec,
@@ -459,12 +631,43 @@ class FusionFSM:
         self._mouth_threshold = fat.get("mouth_opening_threshold", 0.45)
 
         logger.info(
-            "FusionFSM inicializado (θc_max=%.1f°, ΔE_max=%.1f°, EAR<=%.2f, "
+            "FusionFSM inicializado (θc_max=%.1f°, ΔE_max=%.1f°, EAR=%s, "
             "PERCLOS=%s, cooldown=%.0fs)",
-            self._cervical_max, self._shoulder_max, self._ear_threshold,
+            self._cervical_max, self._shoulder_max,
+            ("adaptativo" if self._ear_mode == "adaptive"
+             else f"<={self._fixed_ear_threshold:.2f}"),
             f"{self._perclos_threshold:.2f}" if self._perclos_enabled else "off",
             cooldown_sec,
         )
+
+    # ------------------------------------------------------------------
+
+    @property
+    def ear_threshold(self) -> Optional[float]:
+        """
+        Umbral de ojo cerrado vigente. En modo adaptativo es None mientras la
+        calibración del usuario no ha terminado.
+        """
+        if self._ear_calibrator is None:
+            return self._fixed_ear_threshold
+        return self._ear_calibrator.threshold
+
+    @property
+    def ear_calibrating(self) -> bool:
+        return self._ear_calibrator is not None and not self._ear_calibrator.is_calibrated
+
+    def recalibrate_ear(self) -> None:
+        """
+        Descarta la calibración del EAR y vacía la ventana de PERCLOS.
+
+        La ventana se vacía porque sus muestras se clasificaron con el umbral
+        anterior: mezclar dos criterios en un mismo PERCLOS no tendría sentido.
+        """
+        if self._ear_calibrator is not None:
+            self._ear_calibrator.reset()
+            self.blink_analyzer.reset()
+            self._timer_ear.reset()
+            logger.info("Calibración de EAR reiniciada.")
 
     # ------------------------------------------------------------------
 
@@ -527,23 +730,43 @@ class FusionFSM:
 
         # --- Fatiga ----------------------------------------------------
         if metrics.face_detected:
-            self.blink_analyzer.update(metrics.ear_avg, now)
+            # Una ausencia larga de la cara puede significar otra persona:
+            # la calibración del EAR ya no le corresponde.
+            if (self._ear_calibrator is not None
+                    and self._face_last_seen is not None
+                    and now - self._face_last_seen > self._ear_recalibrate_after):
+                logger.info("Cara ausente %.0f s: se recalibra el EAR.",
+                            now - self._face_last_seen)
+                self.recalibrate_ear()
+            self._face_last_seen = now
 
-            if self._timer_ear.update(metrics.ear_avg <= self._ear_threshold, now):
-                alert = self._try_fire_alert(
-                    AlertType.EYE_FATIGUE,
-                    metric_value=metrics.ear_avg,
-                    threshold=self._ear_threshold,
-                    duration_sec=self._timer_ear.elapsed(now),
-                    now=now,
-                    message=(
-                        f"Fatiga ocular: EAR={metrics.ear_avg:.3f} "
-                        f"<= {self._ear_threshold} por "
-                        f"{self._timer_ear.elapsed(now):.1f}s"
-                    ),
-                )
-                if alert:
-                    generated.append(alert)
+            # Calibración en curso: ni PERCLOS ni fatiga ocular se evalúan,
+            # porque todavía no hay un umbral que signifique algo para este
+            # usuario. Alimentarlos con el umbral fijo reproduciría el error
+            # que motivó la calibración.
+            if self._ear_calibrator is not None and not self._ear_calibrator.is_calibrated:
+                if self._ear_calibrator.update(metrics.ear_avg, now):
+                    self.blink_analyzer.ear_threshold = self._ear_calibrator.threshold
+
+            ear_thr = self.ear_threshold
+            if ear_thr is not None:
+                self.blink_analyzer.update(metrics.ear_avg, now)
+
+                if self._timer_ear.update(metrics.ear_avg <= ear_thr, now):
+                    alert = self._try_fire_alert(
+                        AlertType.EYE_FATIGUE,
+                        metric_value=metrics.ear_avg,
+                        threshold=ear_thr,
+                        duration_sec=self._timer_ear.elapsed(now),
+                        now=now,
+                        message=(
+                            f"Fatiga ocular: EAR={metrics.ear_avg:.3f} "
+                            f"<= {ear_thr:.3f} por "
+                            f"{self._timer_ear.elapsed(now):.1f}s"
+                        ),
+                    )
+                    if alert:
+                        generated.append(alert)
 
             if self._timer_yawn.update(
                     metrics.mouth_opening >= self._mouth_threshold, now):
@@ -661,6 +884,19 @@ class FusionFSM:
             "yawn_window_sec":      self._timer_yawn.window_sec,
             "perclos":              round(self.blink_analyzer.perclos, 3),
             "blink_rate_per_min":   round(self.blink_analyzer.blink_rate_per_min, 1),
+            # Umbral de ojo cerrado vigente (None mientras se calibra) y estado
+            # de la calibración, para que el panel no pinte en rojo un ojo
+            # abierto con un umbral que no corresponde al usuario.
+            "ear_threshold": (round(self.ear_threshold, 3)
+                              if self.ear_threshold is not None else None),
+            "ear_calibrating":      self.ear_calibrating,
+            "ear_baseline": (round(self._ear_calibrator.baseline, 3)
+                             if self._ear_calibrator is not None
+                             and self._ear_calibrator.baseline is not None
+                             else None),
+            "ear_calibration_progress": (
+                round(self._ear_calibrator.progress(now), 2)
+                if self._ear_calibrator is not None else 1.0),
         }
 
     def reset_all(self) -> None:
@@ -671,4 +907,9 @@ class FusionFSM:
         self._timer_yawn.reset()
         self.blink_analyzer.reset()
         self._last_alert.clear()
+        # Tras una pausa puede ser otra persona o la cámara puede haberse
+        # movido: la calibración del EAR se repite.
+        if self._ear_calibrator is not None:
+            self._ear_calibrator.reset()
+        self._face_last_seen = None
         logger.info("FusionFSM: todos los temporizadores reiniciados.")

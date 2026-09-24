@@ -329,10 +329,14 @@ class TestPipelineFraming:
         debe acumular tiempo de riesgo postural: a esa distancia la medición
         no es interpretable.
         """
+        # setup_hint_hold_sec corto: el aviso de encuadre exige que el
+        # problema se mantenga ese tiempo antes de mostrarse (1.5 s en
+        # producción), y esta prueba dura 1.2 s en total.
         alerts, _, state = _run_pipeline(
             tmp_path, FORWARD_HEAD,
             camera={"min_distance_m": 0.50, "max_distance_m": 0.70,
-                    "distance_tolerance_m": 0.02},
+                    "distance_tolerance_m": 0.02,
+                    "setup_hint_hold_sec": 0.2},
         )
         assert not any(a.alert_type == AlertType.CERVICAL_ANGLE for a in alerts)
         assert state is not None and state.metrics.pose_valid is False

@@ -10,7 +10,7 @@
 Detecta en **tiempo real** y **100% local** (sin nube):
 - 🔴 **Cabeza adelantada** — ángulo cervical θc > 30° durante > 5 s
 - 🟠 **Asimetría de hombros** — |ΔE| > 10° durante > 8 s
-- 👁️ **Fatiga ocular** — EAR promedio ≤ 0.21 durante > 3 s
+- 👁️ **Fatiga ocular** — EAR por debajo del umbral **calibrado para cada usuario** (0.70 × su EAR de ojo abierto, medido en los primeros 20 s) durante > 3 s
 - 😴 **Bostezo** — apertura bucal (MAR) ≥ 0.45 durante > 3 s
 - 💤 **Somnolencia** — PERCLOS ≥ 15% en una ventana móvil de 60 s
 
@@ -192,7 +192,7 @@ postural-fatigue-system/
 │       ├── toast_notifier.py # Notificación del SO (no intrusiva)
 │       ├── tray_icon.py      # Icono de bandeja (segundo plano)
 │       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
-├── tests/                    # 201 tests, ~24 s, sin cámara ni MediaPipe
+├── tests/                    # 235 tests, ~23 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
@@ -201,7 +201,8 @@ postural-fatigue-system/
 │   ├── test_performance.py          # FPS, latencia, memoria — geometry+FSM sintético
 │   ├── test_stress.py               # Oclusión, ruido, distancia, transiciones
 │   ├── test_background_alerts.py    # Enrutado de alertas, toast y bandeja
-│   └── test_background_pipeline.py  # Segundo plano y pausa, con pipeline real
+│   ├── test_background_pipeline.py  # Segundo plano y pausa, con pipeline real
+│   └── test_session_2026_09_24.py   # Regresiones de la 1.ª sesión real (EAR, distancia)
 └── docs/
     ├── checklist_pruebas.md             # Pruebas manuales (cámara, bandeja, Cap. IV)
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
@@ -221,7 +222,8 @@ Edita `config/thresholds.json` para ajustar sin recompilar:
 | `cervical_alert_window_sec` | 5.0 s | Ventana temporal para alerta postural |
 | `shoulder_asymmetry_max_deg` | 10.0° | Umbral de asimetría escapular (validado por experto) |
 | `shoulder_alert_window_sec` | 8.0 s | Ventana de hombros — distinta de la cervical, a petición del experto |
-| `ear_threshold` | 0.21 | Umbral EAR de fatiga (Soukupová & Čech) |
+| `ear_threshold_mode` | `adaptive` | Umbral de ojo cerrado calibrado por usuario (20 s al arrancar). `fixed` usa `ear_threshold` |
+| `ear_threshold` | 0.21 | Umbral EAR fijo (Soukupová & Čech) — solo en modo `fixed` |
 | `ear_alert_window_sec` | 3.0 s | Ventana temporal para alerta de fatiga |
 | `blink_min_ms` / `blink_max_ms` | 100–400 ms | Parpadeo fisiológico. `blink_max_ms` es además el periodo de gracia del temporizador de fatiga |
 | `perclos_threshold` / `perclos_window_sec` | 0.15 / 60 s | Somnolencia por PERCLOS (literatura de conducción) |
@@ -253,7 +255,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (201 tests, ~24 s, sin cámara ni MediaPipe)
+# Todos los tests (235 tests, ~23 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -324,7 +326,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 201/201 |
+| Tests | 100% verde | `pytest tests/` | ✅ 235/235 |
 
 ---
 

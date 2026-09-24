@@ -204,23 +204,105 @@ class TestAlertNotifier:
         notifier.show(self._event(AlertType.EYE_FATIGUE))
         assert len(page.overlay) == 1
 
-    def test_dismiss_removes_the_modal_from_the_overlay(self):
+    def test_dismiss_closes_without_removing_the_dialog(self):
+        """
+        REGRESIÓN — recuadro vacío que no se puede cerrar (sesión 2026-09-24).
+
+        Al pulsar "Entendido", el diálogo se marcaba cerrado Y se retiraba del
+        overlay en la misma actualización. Flet solo enviaba "control
+        eliminado", el cliente nunca recibía open = False y la ruta del
+        diálogo quedaba huérfana en Flutter: un recuadro vacío en mitad de la
+        pantalla. El cierre correcto es open = False con el control todavía en
+        el árbol, igual que hace `Page.close()` en Flet 0.24.
+        """
+        page = _FakePage()
+        notifier = AlertNotifier(page)
+        notifier.show(self._event())
+        dialog = notifier._dialog
+
+        notifier._dialog.actions[0].on_click(None)
+
+        assert dialog.open is False, "el cierre debe enviar open = False"
+        assert dialog in page.overlay, (
+            "retirar el diálogo del árbol al cerrarlo deja la ruta huérfana")
+        assert not notifier.is_open
+
+    def test_overlay_stays_bounded_across_many_alerts(self):
         """
         REGRESIÓN — crecimiento sin límite de `page.overlay`.
 
-        Cada alerta añadía un modal al overlay y ninguno se retiraba al
-        cerrarlo. Flet serializa esa lista entera en cada `page.update()`, así
-        que en una jornada de trabajo el árbol de widgets crecía sin parar.
+        Flet serializa el overlay entero en cada `page.update()`. Con el
+        monitoreo corriendo toda la jornada, una entrada por alerta haría
+        crecer el árbol sin parar. Se reutiliza siempre el mismo diálogo.
         """
         page = _FakePage()
         notifier = AlertNotifier(page)
 
-        for _ in range(5):
-            notifier.show(self._event())
-            assert len(page.overlay) == 1
+        notifier.show(self._event())
+        first_dialog = notifier._dialog
+        for _ in range(50):
             notifier._dialog.actions[0].on_click(None)
-            assert page.overlay == []
-            assert not notifier.is_open
+            notifier.show(self._event())
+
+        assert len(page.overlay) == 1
+        assert notifier._dialog is first_dialog, "debe reutilizarse el diálogo"
+
+    def test_reopened_dialog_shows_the_new_alert(self):
+        """El diálogo reutilizado debe mostrar la alerta nueva, no la anterior."""
+        page = _FakePage()
+        notifier = AlertNotifier(page)
+
+        notifier.show(self._event(AlertType.CERVICAL_ANGLE))
+        notifier._dialog.actions[0].on_click(None)
+        notifier.show(self._event(AlertType.DROWSINESS))
+
+        header_text = notifier._dialog.content.controls[0].content.controls[0].value
+        assert "SOMNOLENCIA" in header_text
+        assert notifier.is_open
+
+    def test_dismiss_twice_is_harmless(self):
+        page = _FakePage()
+        received = []
+        notifier = AlertNotifier(page, on_dismissed=received.append)
+        notifier.show(self._event())
+        notifier._dialog.actions[0].on_click(None)
+        notifier._dialog.actions[0].on_click(None)
+        assert len(received) == 1, "el callback no debe dispararse dos veces"
+
+    def test_echo_of_own_dismiss_does_not_close_a_new_modal(self):
+        """
+        El evento on_dismiss del cliente puede llegar como eco del cierre que
+        acabamos de hacer. Si entretanto se abrió un modal nuevo, ese eco no
+        debe cerrarlo en el lado Python: el botón dejaría de funcionar y el
+        recuadro volvería a quedarse atascado.
+        """
+        page = _FakePage()
+        notifier = AlertNotifier(page)
+        notifier.show(self._event(AlertType.CERVICAL_ANGLE))
+        notifier._dialog.actions[0].on_click(None)
+        notifier.show(self._event(AlertType.DROWSINESS))
+
+        notifier._on_client_dismiss(None)     # eco tardío del primer cierre
+
+        assert notifier.is_open, "el eco no debe cerrar el modal nuevo"
+
+    def test_client_side_dismiss_resyncs_state(self, monkeypatch):
+        """
+        Si el cliente cierra el diálogo por su cuenta, el lado Python debe
+        enterarse: si no, el guardia de show() suprimiría todas las alertas
+        siguientes sin nada visible en pantalla.
+        """
+        import src.ui.alert_notifier as mod
+        page = _FakePage()
+        notifier = AlertNotifier(page)
+        notifier.show(self._event())
+
+        monkeypatch.setattr(mod, "_DISMISS_ECHO_SEC", 0.0)
+        notifier._on_client_dismiss(None)
+        assert not notifier.is_open
+
+        notifier.show(self._event(AlertType.DROWSINESS))
+        assert notifier.is_open, "tras resincronizar debe poder mostrarse otra"
 
     def test_on_dismissed_callback_receives_the_event(self):
         page = _FakePage()

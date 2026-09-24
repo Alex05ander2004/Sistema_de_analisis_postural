@@ -130,3 +130,74 @@ class MetricSmootherBank:
                 s.reset()
         else:
             self._smoothers[name].reset()
+
+
+class DebouncedState:
+    """
+    Estado discreto que solo cambia tras mantenerse estable un tiempo.
+
+    Por qué hace falta además del filtro numérico
+    ---------------------------------------------
+    El filtro mediana + EMA estabiliza un valor continuo, pero un aviso que
+    depende de si ese valor está a un lado u otro de un límite sigue
+    parpadeando cuando el valor ronda el límite. En la sesión de prueba del
+    2026-09-24 la distancia estimada cruzó 30 veces el límite de 0.70 m en
+    129 muestras sin que el usuario se moviera: el aviso de encuadre aparecía
+    y desaparecía constantemente.
+
+    Aquí un estado nuevo solo se muestra si se mantiene `hold_sec` seguidos,
+    y el estado neutro (sin aviso) solo vuelve tras `clear_sec`. Mostrar un
+    problema exige más confirmación que retirarlo: un aviso que se va rápido
+    molesta poco; uno que aparece por un frame de ruido sí molesta.
+
+    Uso::
+
+        hint = DebouncedState(neutral="", hold_sec=1.5, clear_sec=1.0)
+        shown = hint.update("too_far", now)   # sigue "" hasta 1.5 s estable
+    """
+
+    def __init__(self, neutral: str = "", hold_sec: float = 1.5,
+                 clear_sec: float = 1.0):
+        if hold_sec < 0 or clear_sec < 0:
+            raise ValueError("hold_sec y clear_sec deben ser >= 0")
+        self._neutral = neutral
+        self._hold_sec = hold_sec
+        self._clear_sec = clear_sec
+        self._shown = neutral
+        self._pending: Optional[str] = None
+        self._pending_since: float = 0.0
+
+    @property
+    def value(self) -> str:
+        """Estado actualmente mostrado."""
+        return self._shown
+
+    def update(self, candidate: str, now: float) -> str:
+        """
+        Propone el estado del frame actual y devuelve el que debe mostrarse.
+
+        Parameters
+        ----------
+        candidate:
+            Estado que indican las métricas de este frame.
+        now:
+            Instante del frame (reloj monótono).
+        """
+        if candidate == self._shown:
+            self._pending = None
+            return self._shown
+
+        if candidate != self._pending:
+            self._pending = candidate
+            self._pending_since = now
+
+        hold = self._clear_sec if candidate == self._neutral else self._hold_sec
+        if now - self._pending_since >= hold:
+            self._shown = candidate
+            self._pending = None
+        return self._shown
+
+    def reset(self) -> None:
+        """Vuelve al estado neutro sin retardo."""
+        self._shown = self._neutral
+        self._pending = None

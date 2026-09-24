@@ -54,12 +54,20 @@ python -m src.ui.app_ui
 | 15 | Abre el panel tras las alertas | El bloque **Alertas recientes** lista las últimas 5, con hora | ☐ |
 | 16 | Deja pasar una sesión con varias alertas seguidas | Nunca aparece un modal bloqueante por postura | ☐ |
 
-### A.4 Alerta aguda (sí debe interrumpir)
+### A.4 Calibración del EAR y alerta aguda
+
+> Desde el 2026-09-24 el umbral de ojo cerrado se calibra para cada usuario
+> durante los **primeros 20 s con la cara detectada**. Mira a la pantalla con
+> normalidad durante ese tiempo: si entornas los ojos, el umbral saldrá bajo.
 
 | # | Prueba | Resultado esperado | ✓ |
 |---|---|---|---|
+| 17a | Arranca la app y mira a la pantalla con normalidad 20 s | La fila del EAR pasa de **"calibrando N%"** a **"umbral 0.1xx"**. Anota el valor: _______ | ☐ |
+| 17b | Tras calibrar, trabaja 2 min con normalidad (parpadeando) | PERCLOS se queda **bajo** (< 0.10) y **no** sale somnolencia. *Antes de la corrección daba ~0.65 y una alerta cada 30 s* | ☐ |
+| 17c | Cierra los ojos 4 s seguidos | Toast de **fatiga ocular** | ☐ |
 | 17 | Cierra los ojos de forma intermitente durante ~1 min (PERCLOS ≥ 15% de la ventana de 60 s) | Aparece el **modal bloqueante** de somnolencia, no un toast | ☐ |
-| 18 | Pulsa "Entendido, voy a pausar" | El modal se cierra y la app sigue funcionando normalmente | ☐ |
+| 18 | Pulsa "Entendido, voy a pausar" | El modal **desaparece por completo**. *Antes quedaba un recuadro vacío que no se podía cerrar* | ☐ |
+| 18b | Provoca una segunda alerta de somnolencia tras la primera | Vuelve a aparecer con su texto y se cierra igual de bien | ☐ |
 
 > Si el 17 te resulta difícil de provocar, baja temporalmente
 > `fatigue.perclos_threshold` a `0.05` en `config/thresholds.json`.
@@ -128,8 +136,9 @@ Estas son las filas marcadas "⬜ Pendiente validación con usuario" en
 |---|---|---|---|
 | 30 | Tápate la cara con la mano 10 s | Sin crash. Los temporizadores se congelan o reinician, no se dispara una alerta falsa | ☐ |
 | 31 | Sal completamente del encuadre y vuelve | Banner "No se detecta al usuario"; al volver, retoma sin alertas acumuladas | ☐ |
-| 32 | Acércate a ~30 cm | Banner "Demasiado cerca"; los temporizadores posturales se congelan | ☐ |
-| 33 | Aléjate a ~1.2 m | Banner "Demasiado lejos" | ☐ |
+| 31b | Siéntate quieto dentro del rango 1 min | El banner de encuadre **no aparece ni parpadea**. *Antes alternaba constantemente con el usuario quieto* | ☐ |
+| 32 | Acércate a ~30 cm | Banner "Demasiado cerca" tras ~1.5 s; los temporizadores posturales se congelan | ☐ |
+| 33 | Aléjate a ~1.2 m | Banner "Demasiado lejos" tras ~1.5 s | ☐ |
 | 34 | Gira la cabeza 90° | `pose_valid` pasa a falso; no se mide θc sobre landmarks inventados | ☐ |
 | 35 | Apaga la luz de la habitación | La detección degrada sin crashear | ☐ |
 | 36 | Contraluz (ventana detrás de ti) | Anota si la detección aguanta — es una condición declarada en §2 del reporte | ☐ |

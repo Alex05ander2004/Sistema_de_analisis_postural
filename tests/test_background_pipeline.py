@@ -254,3 +254,37 @@ class TestPauseMonitoring:
             thread.stop()
             thread.join(timeout=5.0)
             restaurar()
+
+
+# ---------------------------------------------------------------------------
+# Cierre del intérprete con el hilo aún en marcha
+# ---------------------------------------------------------------------------
+
+class TestInterpreterShutdown:
+
+    def test_executor_shutdown_stops_the_thread_cleanly(self, tmp_path):
+        """
+        REGRESIÓN — "RuntimeError: cannot schedule new futures after shutdown".
+
+        Python apaga todos los ThreadPoolExecutor en threading._shutdown(),
+        antes de los handlers de atexit. Si el proceso termina sin pasar por
+        "Salir" (cliente de Flet cerrado, Ctrl+C), el hilo de inferencia
+        encuentra su executor ya apagado a mitad de iteración. Debe detenerse
+        limpiamente, no morir con una excepción.
+        """
+        import threading
+
+        thread, _, _, restaurar = _start_pipeline(tmp_path, NEUTRAL)
+        errores = []
+        hook_original = threading.excepthook
+        threading.excepthook = lambda args: errores.append(args.exc_value)
+        try:
+            thread._executor.shutdown(wait=True)   # lo que hace Python al cerrar
+            thread.start()
+            thread.join(timeout=5.0)
+
+            assert not thread.is_alive(), "el hilo no terminó"
+            assert errores == [], f"el hilo murió con: {errores[0]!r}"
+        finally:
+            threading.excepthook = hook_original
+            restaurar()

@@ -61,7 +61,7 @@ from src.capture.video_thread import VideoThread
 from src.capture.camera_source import resolve_camera_source
 from src.vision.pose_estimator import PoseEstimator
 from src.vision.face_estimator import FaceEstimator
-from src.vision.smoothing import MetricSmootherBank
+from src.vision.smoothing import DebouncedState, MetricSmootherBank
 from src.vision.geometry import (
     calculate_cervical_components,
     calculate_shoulder_asymmetry,
@@ -219,11 +219,26 @@ class InferenceThread(threading.Thread):
 
         # Filtrado temporal previo al FSM
         smooth_cfg = thresholds.get("smoothing", {})
+        # La distancia también se filtra: se estima del ancho de hombros en
+        # píxeles, que tiene el mismo jitter que ΔE. Sin filtrar, en la sesión
+        # del 2026-09-24 saltaba hasta 3.51 m en frames sueltos estando el
+        # usuario quieto a ~0.64 m, y cada salto marcaba pose_valid=False y
+        # REINICIABA los temporizadores de postura.
         self._smoothers = MetricSmootherBank(
-            ["theta_c", "theta_sag", "theta_lat", "delta_e", "ear", "mar"],
+            ["theta_c", "theta_sag", "theta_lat", "delta_e", "ear", "mar",
+             "distance"],
             median_window=smooth_cfg.get("median_window", 5),
             alpha=smooth_cfg.get("ema_alpha", 0.35),
         )
+
+        # Aviso de encuadre con retardo de confirmación e histéresis, para que
+        # no parpadee cuando la distancia ronda un límite. Ver _setup_hint().
+        self._hint_state = DebouncedState(
+            neutral="",
+            hold_sec=cam_cfg.get("setup_hint_hold_sec", 1.5),
+            clear_sec=cam_cfg.get("setup_hint_clear_sec", 1.0),
+        )
+        self._dist_hysteresis = cam_cfg.get("distance_hysteresis_m", 0.03)
 
         # FSM y logger
         ui_cfg = thresholds.get("ui", {})
@@ -300,6 +315,7 @@ class InferenceThread(threading.Thread):
         else:
             self._fsm.reset_all()
             self._smoothers.reset()
+            self._hint_state.reset()
             try:
                 self._vt.start()
             except Exception:
@@ -349,11 +365,26 @@ class InferenceThread(threading.Thread):
                 # --- Inferencia en paralelo -------------------------------
                 run_pose = (self._frame_n % self._pose_every_n) == 0 \
                     or self._last_pose_result is None
-                fut_face = self._executor.submit(self._face_est.process,
-                                                 frame_rgb, True)
-                if run_pose:
-                    fut_pose = self._executor.submit(self._pose_est.process,
+                try:
+                    fut_face = self._executor.submit(self._face_est.process,
                                                      frame_rgb, True)
+                    fut_pose = (self._executor.submit(self._pose_est.process,
+                                                      frame_rgb, True)
+                                if run_pose else None)
+                except RuntimeError:
+                    # El executor ya no acepta trabajo: el intérprete se está
+                    # cerrando. Python apaga todos los ThreadPoolExecutor en
+                    # threading._shutdown(), ANTES de los handlers de atexit,
+                    # así que cuando _shutdown() pide parar a este hilo el
+                    # executor ya está muerto. Sin esto, el hilo moría con
+                    # "RuntimeError: cannot schedule new futures after
+                    # shutdown" y una traza en cada cierre que no pasara por
+                    # "Salir" (cliente de Flet cerrado, Ctrl+C, cierre forzado).
+                    logger.info("Executor cerrado: el intérprete está "
+                                "terminando; se detiene la inferencia.")
+                    break
+
+                if fut_pose is not None:
                     pose_result = fut_pose.result()
                     self._last_pose_result = pose_result
                 else:
@@ -368,6 +399,7 @@ class InferenceThread(threading.Thread):
                 timer_status = self._fsm.get_timers_status()
                 metrics.perclos = timer_status["perclos"]
                 metrics.blink_rate_per_min = timer_status["blink_rate_per_min"]
+                metrics.ear_threshold = timer_status.get("ear_threshold")
 
                 # --- Bitácora de métricas (cada N frames) ------------------
                 if self._frame_n % self._log_metrics_every_n == 0:
@@ -458,8 +490,13 @@ class InferenceThread(threading.Thread):
                     pose_result.landmarks, self._frame_size)
                 delta_e = calculate_shoulder_asymmetry(
                     pose_result.landmarks, self._frame_size)
-                metrics.distance_m = estimate_distance_m(
+                raw_distance = estimate_distance_m(
                     pose_result.landmarks, self._frame_size, self._hfov_deg)
+                if raw_distance is not None:
+                    metrics.distance_m = self._smoothers.update(
+                        "distance", raw_distance)
+                else:
+                    self._smoothers.reset("distance")
 
                 metrics.cervical_angle    = self._smoothers.update("theta_c", theta_c)
                 metrics.cervical_sagittal = self._smoothers.update("theta_sag", theta_sag)
@@ -477,6 +514,7 @@ class InferenceThread(threading.Thread):
             self._smoothers.reset("theta_sag")
             self._smoothers.reset("theta_lat")
             self._smoothers.reset("delta_e")
+            self._smoothers.reset("distance")
             metrics.pose_valid = False
 
         # --- Fatiga ----------------------------------------------------
@@ -505,18 +543,60 @@ class InferenceThread(threading.Thread):
                 <= distance_m
                 <= self._max_dist + self._dist_tolerance)
 
-    def _setup_hint(self, metrics: SensorMetrics) -> str:
-        """Mensaje de encuadre para el usuario (cadena vacía = todo correcto)."""
+    def _hint_category(self, metrics: SensorMetrics) -> str:
+        """
+        Problema de encuadre que indican las métricas de ESTE frame.
+
+        Histéresis en los límites de distancia: un aviso de "demasiado lejos"
+        se activa al superar max_distance_m, pero solo se retira al bajar de
+        max_distance_m − histéresis (y simétrico para "demasiado cerca"). Sin
+        esa banda, una distancia que ronda el límite alterna de categoría
+        aunque esté filtrada.
+        """
         if not metrics.pose_detected:
-            return "No se detecta al usuario — colócate frente a la cámara."
+            return "no_user"
         d = metrics.distance_m
         if d is None:
-            return "No se pueden ver ambos hombros — ajusta el encuadre."
-        if d < self._min_dist:
-            return f"Demasiado cerca ({d:.2f} m) — aléjate hasta {self._min_dist:.2f}–{self._max_dist:.2f} m."
-        if d > self._max_dist:
-            return f"Demasiado lejos ({d:.2f} m) — acércate hasta {self._min_dist:.2f}–{self._max_dist:.2f} m."
+            return "no_shoulders"
+
+        shown = self._hint_state.value
+        m = self._dist_hysteresis
+        close_limit = self._min_dist + (m if shown == "too_close" else 0.0)
+        far_limit = self._max_dist - (m if shown == "too_far" else 0.0)
+        if d < close_limit:
+            return "too_close"
+        if d > far_limit:
+            return "too_far"
         if not metrics.pose_valid:
+            return "low_visibility"
+        return ""
+
+    def _setup_hint(self, metrics: SensorMetrics) -> str:
+        """
+        Mensaje de encuadre para el usuario (cadena vacía = todo correcto).
+
+        La categoría del frame pasa por un retardo de confirmación
+        (DebouncedState): un aviso solo aparece si el problema se mantiene
+        `setup_hint_hold_sec` seguidos, y solo desaparece tras
+        `setup_hint_clear_sec` sin él. Antes el aviso se decidía frame a frame
+        y parpadeaba con el ruido de estimación.
+        """
+        category = self._hint_state.update(self._hint_category(metrics),
+                                           metrics.monotonic)
+        d = metrics.distance_m
+        rango = f"{self._min_dist:.2f}–{self._max_dist:.2f} m"
+
+        if category == "no_user":
+            return "No se detecta al usuario — colócate frente a la cámara."
+        if category == "no_shoulders":
+            return "No se pueden ver ambos hombros — ajusta el encuadre."
+        if category == "too_close":
+            actual = f" ({d:.2f} m)" if d is not None else ""
+            return f"Demasiado cerca{actual} — aléjate hasta {rango}."
+        if category == "too_far":
+            actual = f" ({d:.2f} m)" if d is not None else ""
+            return f"Demasiado lejos{actual} — acércate hasta {rango}."
+        if category == "low_visibility":
             return "Landmarks poco visibles — mira de frente a la cámara."
         return ""
 
@@ -719,23 +799,32 @@ def main(page: ft.Page):
     update_interval_ms = ui_cfg.get("video_update_interval_ms", 33)
 
     async def _ui_update_loop():
-        while _running["value"]:
-            try:
-                state: AppState = state_queue.get_nowait()
-                if state.frame_b64 is not None:
-                    video_feed.set_encoded(state.frame_b64)
-                if state.metrics is not None:
-                    telemetry_panel.update(state.metrics, fps=state.fps,
-                                           timer_status=state.timer_status)
-                setup_banner.visible = bool(state.setup_hint)
-                setup_banner_text.value = state.setup_hint
-                page.update()
-            except Empty:
-                pass
-            except Exception:
-                logger.exception("UI loop error")
+        try:
+            while _running["value"]:
+                try:
+                    state: AppState = state_queue.get_nowait()
+                    if state.frame_b64 is not None:
+                        video_feed.set_encoded(state.frame_b64)
+                    if state.metrics is not None:
+                        telemetry_panel.update(state.metrics, fps=state.fps,
+                                               timer_status=state.timer_status)
+                    setup_banner.visible = bool(state.setup_hint)
+                    setup_banner_text.value = state.setup_hint
+                    page.update()
+                except Empty:
+                    pass
+                except Exception:
+                    logger.exception("UI loop error")
 
-            await asyncio.sleep(update_interval_ms / 1000.0)
+                await asyncio.sleep(update_interval_ms / 1000.0)
+        except asyncio.CancelledError:
+            # Flet cancela esta tarea al cerrarse la sesión. Se termina en
+            # silencio: si la cancelación se propagara, el envoltorio de
+            # page.run_task() de Flet 0.24 llama a f.exception() sobre un
+            # futuro cancelado, que LANZA CancelledError, y vuelca un
+            # "ERROR ... Traceback" en el log en cada cierre de la app. No es
+            # un fallo real, pero en una bitácora de validación lo parece.
+            return
 
     # ----------------------------------------------------------------
     # Apagado limpio

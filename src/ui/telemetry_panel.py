@@ -151,6 +151,15 @@ class MetricRow:
             padding=ft.padding.symmetric(vertical=10, horizontal=14),
         )
 
+    def set_thresholds(self, warn_threshold: float,
+                       alert_threshold: float) -> None:
+        """Cambia los umbrales del semáforo (umbral adaptativo del EAR)."""
+        self.warn_threshold = warn_threshold
+        self.alert_threshold = alert_threshold
+
+    def set_label(self, text: str) -> None:
+        self._label_text.value = text
+
     def update(self, value: float) -> None:
         """Actualiza la fila con el nuevo valor."""
         color = _traffic_color(
@@ -453,6 +462,33 @@ class TelemetryPanel:
             for h, l, c in self._alert_history
         ] or [self._alert_log_empty]
 
+    def _sync_ear_row(self, timer_status: dict) -> None:
+        """
+        Ajusta el semáforo del EAR al umbral vigente del usuario.
+
+        Con el umbral adaptativo el rojo ya no está en 0.21 fijo: está en el
+        umbral calibrado para esta persona. Si el panel siguiera usando 0.21,
+        un usuario con EAR de ojo abierto 0.20 vería su ojo abierto en rojo
+        todo el tiempo — exactamente lo que ocurrió en la sesión del
+        2026-09-24, antes de la calibración.
+
+        El amarillo se sitúa a medio camino entre el umbral y la línea base
+        del usuario: "tu ojo está notablemente más cerrado que tu normal".
+        """
+        if timer_status.get("ear_calibrating"):
+            progreso = timer_status.get("ear_calibration_progress", 0.0)
+            self._row_ear.set_label(
+                f"EAR Promedio · calibrando {progreso * 100:.0f}%")
+            return
+
+        thr = timer_status.get("ear_threshold")
+        if thr is None:
+            return
+        base = timer_status.get("ear_baseline")
+        warn = (thr + base) / 2.0 if base else thr + 0.05
+        self._row_ear.set_thresholds(warn_threshold=warn, alert_threshold=thr)
+        self._row_ear.set_label(f"EAR Promedio · umbral {thr:.3f}")
+
     def update(self, metrics, fps: float = 0.0,
                timer_status: Optional[dict] = None) -> None:
         """
@@ -469,6 +505,7 @@ class TelemetryPanel:
         """
         self._row_cervical.update(metrics.cervical_angle)
         self._row_shoulder.update(abs(metrics.shoulder_asymmetry))
+        self._sync_ear_row(timer_status or {})
         self._row_ear.update(metrics.ear_avg)
         self._row_mouth.update(metrics.mouth_opening)
 
