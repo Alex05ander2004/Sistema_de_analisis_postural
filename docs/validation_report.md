@@ -60,7 +60,7 @@
 | **Latencia total del pipeline (con MediaPipe)** | **< 50 ms** | **72.2 ms antes de optimizar; pendiente de re-medir (ver 3.1c)** | **⬜ Re-medición pendiente** |
 | Precisión de clasificación | ≥ 90% | Pendiente (validación con usuario/experto real) | ☐ Pendiente |
 | Tasa de falsos positivos | < 5% | 0% en pruebas automatizadas (`test_stress.py`, `test_integration_pipeline.py`) | ☑ Sí (solo en condiciones sintéticas) |
-| Cobertura de tests | — | 235 tests, 100% en verde (~23 s) | ☑ Sí |
+| Cobertura de tests | — | 269 tests, 100% en verde (~23 s) | ☑ Sí |
 | Uso de CPU | Estable | Sin deriva de latencia (-0.002 a -0.030 ms en 180 frames, geometry puro) | ☑ Sí |
 | Uso de RAM | Estable | 0.0 MB de crecimiento en 500 frames (geometry puro) | ☑ Sí |
 
@@ -468,7 +468,7 @@ funcione.
 1. Durante los primeros 20 s con cara detectada se estima el EAR de ojo
    abierto como la **mediana** de las muestras. La mediana es insensible al
    5–8% del tiempo que el ojo pasa cerrado por parpadeo normal.
-2. Umbral de ojo cerrado = 0.70 × línea base, acotado a [0.10, 0.25]. El 0.70
+2. Umbral de ojo cerrado = 0.70 × línea base (**ajustado a 0.65 en §3.7.5**), acotado a [0.10, 0.25]. El 0.70
    es la proporción que guarda el umbral de la literatura (~0.21) con el EAR de
    ojo abierto habitual en dlib (~0.30): se conserva el criterio, pero se
    aplica a la escala del propio usuario. **Es un valor de ingeniería,
@@ -558,6 +558,165 @@ estaba sentado con normalidad, apunta a la **posición de la cámara** (webcam
 de portátil por debajo de los ojos, que inclina la vista hacia arriba) y es
 exactamente lo que la re-medición de §4.4 con `calibration_mode.py` a la
 altura de los ojos debe aclarar. No se ha tocado el modelo de θc.
+
+---
+
+## 3.7 Segunda sesión real (2026-09-24) — θc desde una cámara frontal
+
+*(4.2 min, mismo usuario, con las correcciones de §3.6. Base de datos en
+`data/archive/sesion_prueba_2026-09-24b.db`.)*
+
+### 3.7.1 Correcciones de §3.6 confirmadas
+
+| Indicador | Sesión 1 | Sesión 2 |
+|---|---|---|
+| Alertas de somnolencia falsas | 6 en 3.3 min | **0** en 4.2 min |
+| `pose_valid = 0` por outliers de distancia | 10 de 129 | 4 de 190 |
+| Distancia estimada — mediana / p90 | 0.640 / 0.777 m | 0.581 / 0.628 m |
+| FPS — mediana | 22.4 | 23.9 |
+
+### 3.7.2 Hallazgo principal — la profundidad de MediaPipe no es una medición
+
+**Observado:** sentado recto, o como mucho levemente inclinado, el usuario
+vio θc oscilar entre 35° y 45°. La sesión registró una mediana de 47.9° y **8
+alertas cervicales**, una por ventana de cooldown.
+
+**Diagnóstico en vivo** (152 frames, usuario recto, cámara del equipo de
+pruebas):
+
+| Medida | Valor (mediana) |
+|---|---|
+| θc 3D con landmarks de imagen (el que usa la app) | **52.9°** |
+| · componente sagital (depende de `z`) | **52.5°** |
+| · componente lateral (plano de la imagen) | −11.0° |
+| θc calculado solo con x, y | **11.0°** |
+| θc con `pose_world_landmarks` (metros) | 30.1° |
+| Profundidad orejas→hombros / altura del cuello | **1.30** |
+| Visibilidad de las caderas | **0.000** |
+
+La componente sagital de θc, que es la que representa la cabeza adelantada,
+sale **casi entera de la profundidad `z`**. Según la documentación de
+MediaPipe Pose, `z` se mide **desde el punto medio de la cadera**, y con una
+cámara de escritorio las caderas quedan fuera del encuadre: el modelo
+extrapola un origen que nunca ve. El resultado es que sitúa las orejas 1.30
+alturas de cuello **por delante** de los hombros, unos 29 cm, con el usuario
+sentado recto. Es físicamente imposible: una cabeza adelantada severa ronda
+los 12 cm. Los *world landmarks* reducen el sesgo pero no lo eliminan (30°).
+
+**Implicación para la tesis:** la escala de §3.3.3 (12 cm → 28.6°) es
+matemáticamente correcta, pero se verificó con landmarks **sintéticos**, cuya
+`z` es exacta. Con una cámara frontal real, `z` no es métrica y el θc
+absoluto no puede compararse con el umbral clínico de 30°. **Esto no es un
+error de implementación sino un límite del método** (estimación monocular de
+profundidad sin el origen a la vista), y debe declararse así en el
+Capítulo IV. La medición clínica de referencia (CVA) se hace desde una vista
+**lateral**, precisamente para que el adelantamiento quede en el plano de la
+imagen.
+
+### 3.7.3 Corrección — θc relativo a la postura neutra del usuario
+
+`postural.cervical_mode: "reference"` (`PostureBaselineCalibrator` en
+`fusion_fsm.py`):
+
+1. Durante los primeros 20 s con pose válida se fija la postura neutra del
+   usuario como la mediana de θc. Si el rango intercuartílico supera 15°, la
+   postura no fue estable y la calibración se repite.
+2. La alerta se evalúa sobre la **desviación** Δθc = θc − θc_neutro, con
+   umbral `cervical_deviation_max_deg` = **15° (PROVISIONAL)** y la misma
+   ventana de 5 s.
+3. El sesgo de `z` es sistemático para una persona y una colocación de
+   cámara, así que la resta lo cancela.
+4. Se recalibra al reanudar tras una pausa, tras 30 s sin pose válida, y a
+   petición del usuario (menú de bandeja *Recalibrar postura y ojos*).
+5. El panel muestra Δθc en lugar del ángulo absoluto que confundía al
+   usuario, y la banda superior guía la calibración ("siéntate recto…").
+6. `metrics_log` guarda `cervical_baseline` y `cervical_deviation` junto al θc
+   absoluto, para poder reconstruir los tres.
+
+**Reproducción con los datos reales de la sesión (189 muestras):**
+
+| Modo | Alertas cervicales |
+|---|---|
+| Absoluto | **8** (idénticas a las registradas) |
+| Referencia | **0** — neutro calibrado 51.4°, Δθc mediana −4.0°, máxima +11.3° |
+
+**Limitaciones de esta corrección, a declarar:**
+
+- ⚠️ **El umbral de 15° se eligió con esta misma sesión**: el θc filtrado del
+  usuario recto nunca superó su mediana en más de 14.8°. Que la reproducción
+  dé 0 alertas **no es una validación independiente**; solo muestra que el
+  umbral no se dispara con el ruido de este usuario.
+- ⚠️ **Riesgo de ceguera:** si una cabeza adelantada real produce menos de
+  15° de Δθc, el sistema no la detectaría. En la prueba de transición de julio
+  (con la geometría antigua), la posición más adelantada posible dio +13°
+  sobre la línea base. **La medición D.3 es imprescindible**: Δθc para 6, 9 y
+  12 cm de adelantamiento real respecto a la postura neutra, y fijar el umbral
+  con esos datos.
+- La referencia cancela el **sesgo** de `z` pero no su **ganancia**: Δθc no
+  se traduce a centímetros de forma fiable, y el 30° del experto no puede
+  trasladarse directamente a un umbral de desviación.
+- La calibración supone que el usuario está sentado recto. En esta sesión la
+  postura neutra quedó en 51.4° frente a una mediana posterior de 47.9°: el
+  usuario estaba algo más adelantado al arrancar que después.
+
+**Indicador complementario sin profundidad** (`geometry.calculate_neck_ratio`):
+altura aparente del cuello dividida por el ancho de hombros, solo con x e y.
+Es independiente de la distancia a la cámara y de `z`, y en vivo midió 0.457.
+**Solo se registra** (`metrics_log.neck_ratio` y CSV de `calibration_mode.py`)
+para comparar en D.3 cuál de los dos discrimina mejor la cabeza adelantada. Si
+resultara más fiable que Δθc, sería el candidato natural para sustituirlo.
+
+### 3.7.4 Notificaciones que Windows aceptaba pero no mostraba
+
+**Observado:** con la app en segundo plano no aparecía ninguna notificación.
+
+**Diagnóstico:** las 8 alertas **sí llegaban a Windows**: el historial de
+`ToastNotificationManager` contenía la de "Cabeza adelantada" emitida por la
+app, y cada una reemplazaba a la anterior porque comparten etiqueta. Tres
+toasts de prueba también se aceptaron. Pero el shell no los mostraba, ni como
+aviso emergente ni en el centro de notificaciones. La causa está en las reglas
+de Windows sobre la identidad de la aplicación (AppUserModelID):
+
+- un AUMID **no puede contener espacios**, y el de la app era
+  `"Monitor Postural y Fatiga"`. La librería winotify afirma que sí los
+  admite, y eso contradice la especificación;
+- una app de escritorio no empaquetada debe **registrar** su AUMID en
+  `HKCU\Software\Classes\AppUserModelId\<AUMID>`.
+
+Además, winotify ejecuta PowerShell con la salida de errores descartada, así
+que cualquier rechazo era invisible para la aplicación.
+
+**Corrección:** AUMID `UNSA.MonitorPostural`, registrado en el perfil del
+usuario (sin permisos de administrador) con nombre visible e icono, e icono
+PNG (los toasts no admiten `.ico`). **Verificado por el usuario:** con el
+identificador corregido la notificación llega al centro de notificaciones.
+
+**Lo que sigue sin mostrarse depende del usuario:** con **No molestar**
+activo, Windows retiene el aviso en el centro de notificaciones sin mostrarlo.
+Es una decisión legítima del usuario y el sistema la respeta. Para que las
+alertas lo atraviesen, puede marcarse la app como prioritaria (Configuración →
+Sistema → Notificaciones). La API `SHQueryUserNotificationState` devolvió
+`QUNS_ACCEPTS_NOTIFICATIONS` con No molestar aparentemente activo, así que el
+sistema **no puede detectarlo de forma fiable**. Esto refuerza la limitación de
+§7.2 sobre alertas emitidas frente a percibidas.
+
+### 3.7.5 Ajuste del ratio del EAR adaptativo: 0.70 → 0.65
+
+La calibración captó los ojos más abiertos (0.257, el usuario atento al
+arrancar) que durante el trabajo (0.236, un 9% más relajados). Con 0.70, el
+8.3% de las muestras de trabajo quedaban por debajo del umbral y el PERCLOS
+llegó a 0.141 frente al límite de 0.15: **una falsa somnolencia a punto de
+ocurrir**. Con 0.65, 3.6%. Un cierre real (EAR ~0.10) queda muy por debajo de
+ambos umbrales. Sigue siendo un valor de ingeniería, PROVISIONAL.
+
+### 3.7.6 Observación pendiente — tasa de parpadeo
+
+La tasa de parpadeo registrada tuvo una mediana de **3/min**, cuando lo
+fisiológico es 15–20/min. La causa probable es el filtro mediana(5) + EMA: con
+~24 FPS, un parpadeo de 100–150 ms ocupa 2–4 frames y la mediana de 5 lo borra.
+El indicador **solo se mide** (no dispara alertas), así que no produce falsas
+alarmas, pero **no debe reportarse en el Capítulo IV sin revisar**: el conteo
+de parpadeos necesitaría el EAR sin filtrar.
 
 ---
 
@@ -746,14 +905,20 @@ El experto (fisioterapeuta) recomendó el **Índice de Discapacidad Cervical** (
    abiertos y mira a la pantalla durante los primeros 20 s. Declararlo así
    en el Capítulo IV y reportar el umbral calibrado de cada participante
    (columna `metrics_log.ear_threshold`).
-7. **La tasa de alertas efectivamente percibidas no se mide.** Con un toast, el
+7. **θc absoluto no es medible con una cámara frontal** (§3.7.2): su
+   componente sagital depende de la profundidad `z` de MediaPipe, cuyo
+   origen (la cadera) queda fuera del encuadre. El sistema mide la
+   desviación respecto a la postura neutra del usuario; el umbral de 15°
+   es PROVISIONAL y **podría dejar el sistema ciego** a una cabeza
+   adelantada real si esta produce menos desviación. Fijarlo con D.3.
+8. **La tasa de alertas efectivamente percibidas no se mide.** Con un toast, el
    usuario puede no verlo. La tabla `events` registra alertas *emitidas*, no
    *atendidas*; la diferencia importa para interpretar cualquier cifra de
    eficacia del sistema.
-8. **Los umbrales provienen de un único informante experto** (N=1), y varios de ellos quedaron sin valor clínico: las dos ventanas temporales posturales, el cooldown entre alertas y los umbrales de aviso (semáforo amarillo, hoy cableado al 70% del rojo sin base clínica). El protocolo v2 (`docs/expert_interview_protocol_v2.md`) los aborda y propone ampliar a tres informantes en el módulo postural.
-9. **Umbrales que siguen siendo de literatura o de ingeniería, no validados clínicamente por el experto entrevistado:** EAR (0.21, literatura de visión artificial), PERCLOS (0.15/60 s, literatura de conducción), MAR de bostezo (0.45, estimación de ingeniería sin fuente). Deben declararse como tales en el Capítulo IV.
-10. **Ambigüedad de escala en el umbral cervical.** Al experto se le pidió un valor en la escala θc advirtiéndole que θc ≈ 90° − CVA, y respondió "de 30° para abajo". No consta si razonaba en θc o en CVA, y el significado clínico es opuesto. El bloque A0 del protocolo v2 lo resuelve con una escala visual.
-11. **La estimación de distancia usa una media poblacional** de ancho biacromial (0.38 m) y un FOV de cámara asumido (60°). Es suficiente para avisar del encuadre, pero debe calibrarse con una medición con cinta métrica antes de reportar distancias en el Capítulo IV (`camera.horizontal_fov_deg`).
+9. **Los umbrales provienen de un único informante experto** (N=1), y varios de ellos quedaron sin valor clínico: las dos ventanas temporales posturales, el cooldown entre alertas y los umbrales de aviso (semáforo amarillo, hoy cableado al 70% del rojo sin base clínica). El protocolo v2 (`docs/expert_interview_protocol_v2.md`) los aborda y propone ampliar a tres informantes en el módulo postural.
+10. **Umbrales que siguen siendo de literatura o de ingeniería, no validados clínicamente por el experto entrevistado:** EAR (0.21, literatura de visión artificial), PERCLOS (0.15/60 s, literatura de conducción), MAR de bostezo (0.45, estimación de ingeniería sin fuente). Deben declararse como tales en el Capítulo IV.
+11. **Ambigüedad de escala en el umbral cervical.** Al experto se le pidió un valor en la escala θc advirtiéndole que θc ≈ 90° − CVA, y respondió "de 30° para abajo". No consta si razonaba en θc o en CVA, y el significado clínico es opuesto. El bloque A0 del protocolo v2 lo resuelve con una escala visual.
+12. **La estimación de distancia usa una media poblacional** de ancho biacromial (0.38 m) y un FOV de cámara asumido (60°). Es suficiente para avisar del encuadre, pero debe calibrarse con una medición con cinta métrica antes de reportar distancias en el Capítulo IV (`camera.horizontal_fov_deg`).
 
 ### 7.3 Trabajo Futuro
 

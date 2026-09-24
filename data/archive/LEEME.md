@@ -75,3 +75,26 @@ medición del Capítulo IV.
 ```bash
 python src/tools/stats_report.py --db data/archive/sesion_prueba_2026-09-24.db --list-sessions
 ```
+
+---
+
+## `sesion_prueba_2026-09-24b.db`
+
+Segunda sesión del mismo día (4.2 min, mismo usuario), con las correcciones de
+EAR, distancia y modal ya aplicadas. Evidencia de `docs/validation_report.md`
+§3.7.
+
+### Qué sigue siendo válido
+
+- Confirma en hardware real las correcciones de §3.6: **0 alertas de
+  somnolencia** (antes 6), menos `pose_valid = 0`, distancia estable.
+- `ear_avg` y `ear_threshold`: evidencia del ajuste del ratio adaptativo de
+  0.70 a 0.65 (§3.7.5).
+- `fps`: mediana 23.9.
+
+### Qué NO es válido
+
+| Dato | Por qué |
+|---|---|
+| `cervical_angle` y las 8 alertas `cervical_angle` | θc **absoluto** con cámara frontal: su componente sagital sale de la profundidad `z` de MediaPipe, extrapolada con las caderas fuera de cuadro. Usuario recto → mediana 47.9°. Es la evidencia del §3.7.2, no una medición de postura |
+| `blink_rate_per_min` | Mediana 3/min: el filtro borra los parpadeos cortos (§3.7.6) |

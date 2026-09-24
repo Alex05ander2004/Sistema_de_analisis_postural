@@ -92,6 +92,10 @@ class SensorMetrics:
     blink_rate_per_min: float = 0.0    # parpadeos por minuto
     ear_threshold: Optional[float] = None  # umbral de ojo cerrado vigente
                                            # (None = calibrando)
+    cervical_baseline: Optional[float] = None   # θc de la postura neutra del
+                                                # usuario (None = calibrando)
+    cervical_deviation: Optional[float] = None  # θc − línea base
+    neck_ratio: Optional[float] = None          # indicador 2D cuello/hombros
 
     timestamp: float = field(default_factory=time.time)
     monotonic: float = field(default_factory=time.perf_counter)
@@ -416,13 +420,23 @@ class EarBaselineCalibrator:
        parpadee con normalidad durante la calibración.
     3. Umbral = `ratio` × línea base, acotado a `bounds`.
 
-    Con ratio = 0.70 y los datos reales de la sesión: línea base 0.200 →
-    umbral 0.140 → 2.4% de muestras "cerradas", compatible con parpadeo
-    normal, frente al 63.9% del umbral fijo. El 0.70 es la proporción que
-    guarda el umbral de la literatura (≈0.21) con el EAR de ojo abierto que
-    suele reportarse para dlib (≈0.30): se aplica la misma proporción, pero
-    sobre la línea base del propio usuario. Es un valor de ingeniería, a
-    declarar como tal en el Capítulo IV y a validar en la sesión real.
+    Por qué ratio = 0.65 (ajustado con dos sesiones reales)
+    ------------------------------------------------------
+    El punto de partida fue 0.70: la proporción que guarda el umbral de la
+    literatura (≈0.21) con el EAR de ojo abierto habitual en dlib (≈0.30).
+
+      - Sesión 1: línea base 0.200. Con 0.70 y 0.65, 2.4% de muestras
+        "cerradas", frente al 63.9% del umbral fijo.
+      - Sesión 2: la calibración captó los ojos más abiertos (0.257, el
+        usuario miraba la pantalla atento al arrancar) que durante el trabajo
+        (0.236, un 9% más relajados). Con 0.70, el 8.3% de las muestras de
+        trabajo quedaron por debajo del umbral y el PERCLOS rozó 0.141 frente
+        al límite de 0.15: una falsa somnolencia a la espera de ocurrir. Con
+        0.65, 3.6%.
+
+    Un cierre real (EAR ~0.10) queda muy por debajo de ambos umbrales, así
+    que 0.65 no resta sensibilidad a lo que importa. Sigue siendo un valor de
+    ingeniería, PROVISIONAL, a declarar como tal en el Capítulo IV.
 
     Recalibración
     -------------
@@ -433,7 +447,7 @@ class EarBaselineCalibrator:
 
     def __init__(self,
                  calibration_sec: float = 20.0,
-                 ratio: float = 0.70,
+                 ratio: float = 0.65,
                  bounds: Tuple[float, float] = (0.10, 0.25),
                  min_samples: int = 60):
         if not 0.0 < ratio < 1.0:
@@ -514,6 +528,129 @@ class EarBaselineCalibrator:
         self._started_at = None
         self._baseline = None
         self._threshold = None
+
+
+# ---------------------------------------------------------------------------
+# Postura de referencia para θc
+# ---------------------------------------------------------------------------
+
+class PostureBaselineCalibrator:
+    """
+    Registra la postura neutra del usuario para medir θc **respecto a ella**.
+
+    El problema que resuelve
+    ------------------------
+    θc es un ángulo 3D y su componente sagital (cabeza adelantada) depende
+    casi por completo de la profundidad `z` de MediaPipe. Con una sola cámara
+    frontal esa profundidad no es una medición física:
+
+      - el origen de `z` es el punto medio de la **cadera**, que en un
+        escritorio queda fuera del encuadre (visibilidad medida: 0.000), así
+        que el modelo extrapola un origen que nunca ve;
+      - en el diagnóstico del 2026-09-24, con el usuario sentado recto,
+        MediaPipe situó las orejas 1.30 alturas de cuello **por delante** de
+        los hombros (~29 cm, físicamente imposible);
+      - resultado: θc = 52.9° en vivo (componente sagital 52.5°), frente a
+        11.0° calculado solo con x e y. En la sesión de 4.2 min, mediana
+        47.9° y **8 alertas cervicales falsas**.
+
+    El sesgo es sistemático para una persona y una colocación de cámara, así
+    que se cancela midiendo la **desviación** respecto a su postura neutra:
+
+        Δθc = θc − θc_referencia
+
+    Es el mismo principio que la calibración del EAR, y es práctica habitual
+    en la monitorización postural con webcam.
+
+    Limitaciones (a declarar en el Capítulo IV)
+    -------------------------------------------
+      - Supone que el usuario está sentado recto durante la calibración. Si se
+        calibra encorvado, esa postura pasa a ser "neutra". Por eso la
+        interfaz lo pide explícitamente y la bandeja permite recalibrar.
+      - Cancela el sesgo de `z` pero no su ganancia: Δθc no se traduce a
+        centímetros de forma fiable. El umbral de desviación debe fijarse
+        empíricamente (medición D.3), no derivarse del 30° absoluto del
+        experto.
+
+    Método
+    ------
+    Mediana de θc durante `calibration_sec` con pose válida. Se descarta y se
+    repite si la postura no fue estable (rango intercuartílico mayor que
+    `max_iqr_deg`): una calibración hecha mientras el usuario se movía no
+    representa ninguna postura concreta.
+    """
+
+    def __init__(self, calibration_sec: float = 20.0,
+                 min_samples: int = 60, max_iqr_deg: float = 15.0):
+        self.calibration_sec = calibration_sec
+        self.min_samples = min_samples
+        self.max_iqr_deg = max_iqr_deg
+        self._samples: list = []
+        self._started_at: Optional[float] = None
+        self._baseline: Optional[float] = None
+
+    @property
+    def is_calibrated(self) -> bool:
+        return self._baseline is not None
+
+    @property
+    def baseline(self) -> Optional[float]:
+        """θc de la postura neutra del usuario, o None si aún calibra."""
+        return self._baseline
+
+    def progress(self, now: float) -> float:
+        """Fracción [0, 1] de la calibración completada, para la interfaz."""
+        if self.is_calibrated:
+            return 1.0
+        if self._started_at is None:
+            return 0.0
+        by_time = (now - self._started_at) / self.calibration_sec
+        by_count = len(self._samples) / self.min_samples
+        return max(0.0, min(1.0, min(by_time, by_count)))
+
+    def deviation(self, theta_c: float) -> Optional[float]:
+        """Δθc respecto a la postura neutra, o None si aún calibra."""
+        if self._baseline is None:
+            return None
+        return theta_c - self._baseline
+
+    def update(self, theta_c: float, now: float) -> bool:
+        """
+        Incorpora una muestra. Devuelve True solo en el frame en que la
+        calibración se completa.
+        """
+        if self.is_calibrated:
+            return False
+        if self._started_at is None:
+            self._started_at = now
+        self._samples.append(float(theta_c))
+
+        if (now - self._started_at < self.calibration_sec
+                or len(self._samples) < self.min_samples):
+            return False
+
+        ordered = sorted(self._samples)
+        n = len(ordered)
+        iqr = ordered[(3 * n) // 4] - ordered[n // 4]
+        if iqr > self.max_iqr_deg:
+            logger.warning(
+                "Calibración de postura descartada: la postura no fue estable "
+                "(rango intercuartílico %.1f° > %.1f°). Se repite.",
+                iqr, self.max_iqr_deg)
+            self._samples.clear()
+            self._started_at = now
+            return False
+
+        self._baseline = median(self._samples)
+        self._samples.clear()
+        logger.info("Postura de referencia calibrada: θc neutro = %.1f° "
+                    "(rango intercuartílico %.1f°)", self._baseline, iqr)
+        return True
+
+    def reset(self) -> None:
+        self._samples.clear()
+        self._started_at = None
+        self._baseline = None
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +739,7 @@ class FusionFSM:
             bounds = fat.get("ear_threshold_bounds", [0.10, 0.25])
             self._ear_calibrator = EarBaselineCalibrator(
                 calibration_sec=fat.get("ear_calibration_sec", 20.0),
-                ratio=fat.get("ear_adaptive_ratio", 0.70),
+                ratio=fat.get("ear_adaptive_ratio", 0.65),
                 bounds=(float(bounds[0]), float(bounds[1])),
             )
         # Una ausencia de la cara más larga que esto fuerza a recalibrar:
@@ -630,10 +767,35 @@ class FusionFSM:
         self._shoulder_max = post.get("shoulder_asymmetry_max_deg", 10.0)
         self._mouth_threshold = fat.get("mouth_opening_threshold", 0.45)
 
+        # θc absoluto o relativo a la postura neutra del usuario.
+        #
+        # Igual que con el EAR, el valor por defecto en CÓDIGO es "absolute"
+        # para que una configuración antigua conserve su comportamiento;
+        # config/thresholds.json activa "reference". Ver
+        # PostureBaselineCalibrator para el porqué.
+        cmode = str(post.get("cervical_mode", "absolute")).lower()
+        if cmode not in ("absolute", "reference"):
+            logger.warning("postural.cervical_mode='%s' no es válido; "
+                           "usando 'absolute'.", cmode)
+            cmode = "absolute"
+        self._cervical_mode = cmode
+        self._cervical_dev_max = post.get("cervical_deviation_max_deg", 15.0)
+        self._posture_calibrator: Optional[PostureBaselineCalibrator] = None
+        if cmode == "reference":
+            self._posture_calibrator = PostureBaselineCalibrator(
+                calibration_sec=post.get("posture_calibration_sec", 20.0),
+                max_iqr_deg=post.get("posture_calibration_max_iqr_deg", 15.0),
+            )
+        self._posture_recalibrate_after = post.get(
+            "posture_recalibrate_after_absence_sec", 30.0)
+        self._pose_last_seen: Optional[float] = None
+
         logger.info(
-            "FusionFSM inicializado (θc_max=%.1f°, ΔE_max=%.1f°, EAR=%s, "
+            "FusionFSM inicializado (θc=%s, ΔE_max=%.1f°, EAR=%s, "
             "PERCLOS=%s, cooldown=%.0fs)",
-            self._cervical_max, self._shoulder_max,
+            (f"referencia, Δ>{self._cervical_dev_max:.1f}°"
+             if cmode == "reference" else f"absoluto >{self._cervical_max:.1f}°"),
+            self._shoulder_max,
             ("adaptativo" if self._ear_mode == "adaptive"
              else f"<={self._fixed_ear_threshold:.2f}"),
             f"{self._perclos_threshold:.2f}" if self._perclos_enabled else "off",
@@ -669,6 +831,59 @@ class FusionFSM:
             self._timer_ear.reset()
             logger.info("Calibración de EAR reiniciada.")
 
+    def _cervical_condition(self, metrics: SensorMetrics, now: float):
+        """
+        Valor y límite con los que se evalúa la cabeza adelantada.
+
+        Returns
+        -------
+        (valor, límite, texto) o None si aún no se puede evaluar
+            En modo absoluto: θc frente a cervical_angle_max_deg.
+            En modo referencia: Δθc frente a cervical_deviation_max_deg, y
+            None mientras la postura neutra se está calibrando (no hay aún
+            una referencia que dé sentido a la desviación).
+        """
+        theta = metrics.cervical_angle
+        if self._posture_calibrator is None:
+            return (abs(theta), self._cervical_max,
+                    f"θc={theta:.1f}° (máx {self._cervical_max}°)")
+
+        if not self._posture_calibrator.is_calibrated:
+            self._posture_calibrator.update(theta, now)
+            return None
+
+        dev = self._posture_calibrator.deviation(theta)
+        return (dev, self._cervical_dev_max,
+                f"+{dev:.1f}° respecto a tu postura neutra "
+                f"(máx +{self._cervical_dev_max}°)")
+
+    @property
+    def cervical_baseline(self) -> Optional[float]:
+        """θc de la postura neutra (None si calibra o en modo absoluto)."""
+        if self._posture_calibrator is None:
+            return None
+        return self._posture_calibrator.baseline
+
+    @property
+    def posture_calibrating(self) -> bool:
+        return (self._posture_calibrator is not None
+                and not self._posture_calibrator.is_calibrated)
+
+    def recalibrate_posture(self) -> None:
+        """Descarta la postura de referencia; se vuelve a calibrar."""
+        if self._posture_calibrator is not None:
+            self._posture_calibrator.reset()
+            self._timer_cervical.reset()
+            logger.info("Postura de referencia reiniciada.")
+
+    def recalibrate_all(self) -> None:
+        """
+        Recalibración pedida por el usuario (menú de bandeja): útil si se
+        calibró encorvado o si otra persona ocupa el puesto.
+        """
+        self.recalibrate_posture()
+        self.recalibrate_ear()
+
     # ------------------------------------------------------------------
 
     def update(self, metrics: SensorMetrics) -> list[AlertEvent]:
@@ -691,22 +906,33 @@ class FusionFSM:
         # reiniciarlo: al recuperar la detección el sistema dispararía una
         # alerta acumulada durante un intervalo que nunca llegó a medir.
         if metrics.pose_detected and metrics.pose_valid:
-            if self._timer_cervical.update(
-                    abs(metrics.cervical_angle) > self._cervical_max, now):
-                alert = self._try_fire_alert(
-                    AlertType.CERVICAL_ANGLE,
-                    metric_value=metrics.cervical_angle,
-                    threshold=self._cervical_max,
-                    duration_sec=self._timer_cervical.elapsed(now),
-                    now=now,
-                    message=(
-                        f"Cabeza adelantada detectada: θc={metrics.cervical_angle:.1f}° "
-                        f"(máx {self._cervical_max}°) por "
-                        f"{self._timer_cervical.elapsed(now):.1f}s"
-                    ),
-                )
-                if alert:
-                    generated.append(alert)
+            # Una ausencia larga puede significar otra persona u otra
+            # colocación de la cámara: la postura de referencia ya no vale.
+            if (self._posture_calibrator is not None
+                    and self._pose_last_seen is not None
+                    and now - self._pose_last_seen > self._posture_recalibrate_after):
+                logger.info("Usuario ausente %.0f s: se recalibra la postura.",
+                            now - self._pose_last_seen)
+                self.recalibrate_posture()
+            self._pose_last_seen = now
+
+            cervical = self._cervical_condition(metrics, now)
+            if cervical is not None:
+                value, limit, texto = cervical
+                if self._timer_cervical.update(value > limit, now):
+                    alert = self._try_fire_alert(
+                        AlertType.CERVICAL_ANGLE,
+                        metric_value=value,
+                        threshold=limit,
+                        duration_sec=self._timer_cervical.elapsed(now),
+                        now=now,
+                        message=(
+                            f"Cabeza adelantada detectada: {texto} por "
+                            f"{self._timer_cervical.elapsed(now):.1f}s"
+                        ),
+                    )
+                    if alert:
+                        generated.append(alert)
 
             if self._timer_shoulder.update(
                     abs(metrics.shoulder_asymmetry) > self._shoulder_max, now):
@@ -897,6 +1123,15 @@ class FusionFSM:
             "ear_calibration_progress": (
                 round(self._ear_calibrator.progress(now), 2)
                 if self._ear_calibrator is not None else 1.0),
+            # Postura de referencia para θc (modo "reference").
+            "cervical_mode":        self._cervical_mode,
+            "cervical_baseline": (round(self.cervical_baseline, 2)
+                                  if self.cervical_baseline is not None else None),
+            "cervical_deviation_max": self._cervical_dev_max,
+            "posture_calibrating":  self.posture_calibrating,
+            "posture_calibration_progress": (
+                round(self._posture_calibrator.progress(now), 2)
+                if self._posture_calibrator is not None else 1.0),
         }
 
     def reset_all(self) -> None:
@@ -912,4 +1147,7 @@ class FusionFSM:
         if self._ear_calibrator is not None:
             self._ear_calibrator.reset()
         self._face_last_seen = None
+        if self._posture_calibrator is not None:
+            self._posture_calibrator.reset()
+        self._pose_last_seen = None
         logger.info("FusionFSM: todos los temporizadores reiniciados.")

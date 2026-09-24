@@ -140,6 +140,15 @@ class HistoryLogger:
             # sin registrarlo un EAR o un PERCLOS guardado no se puede
             # interpretar después. NULL = calibración en curso.
             "ear_threshold":      "REAL",
+            # θc relativo a la postura neutra del usuario (modo "reference").
+            # Se guardan la referencia y la desviación: el θc absoluto sigue
+            # en cervical_angle, así que cualquier fila permite reconstruir
+            # los tres. NULL = calibración en curso o modo absoluto.
+            "cervical_baseline":  "REAL",
+            "cervical_deviation": "REAL",
+            # Indicador 2D sin profundidad (altura del cuello / ancho de
+            # hombros). Solo se mide, para compararlo con θc en la validación.
+            "neck_ratio":         "REAL",
         }
         for col, tipo in nuevas.items():
             if col not in existing:
@@ -251,14 +260,21 @@ class HistoryLogger:
 
         distancia = getattr(metrics, "distance_m", None)
         ear_thr = getattr(metrics, "ear_threshold", None)
+
+        def _opt(name, nd):
+            v = getattr(metrics, name, None)
+            return round(v, nd) if v is not None else None
+
         with self._cursor() as cur:
             cur.execute(
                 """INSERT INTO metrics_log
                    (session_id, timestamp, cervical_angle, shoulder_asymmetry,
                     ear_avg, mouth_opening, fps, face_detected, pose_detected,
                     cervical_sagittal, cervical_lateral, distance_m,
-                    perclos, blink_rate_per_min, pose_valid, ear_threshold)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    perclos, blink_rate_per_min, pose_valid, ear_threshold,
+                    cervical_baseline, cervical_deviation, neck_ratio)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?)""",
                 (
                     self._session_id,
                     metrics.timestamp,
@@ -276,6 +292,9 @@ class HistoryLogger:
                     round(getattr(metrics, "blink_rate_per_min", 0.0), 2),
                     int(getattr(metrics, "pose_valid", True)),
                     round(ear_thr, 4) if ear_thr is not None else None,
+                    _opt("cervical_baseline", 3),
+                    _opt("cervical_deviation", 3),
+                    _opt("neck_ratio", 4),
                 ),
             )
 

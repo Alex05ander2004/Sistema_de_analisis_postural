@@ -78,6 +78,27 @@ def _start_pipeline(tmp_path, scenario, **over):
     return thread, state_queue, alerts, restaurar
 
 
+def _count_encodes(thread):
+    """
+    Envuelve video_feed.encode() para contar cuántas veces se codifica un
+    frame. Es lo que el ahorro de render debe evitar, medido directamente.
+
+    Contar estados con frame_b64 en la cola no sirve para esto: la cola tiene
+    tamaño 1 y el frame renderizado (cada 33 ms) lo pisa el siguiente estado
+    sin imagen en 1-3 ms, así que "pescarlo" depende de la carga de la CPU y
+    el test fallaba de forma intermitente al correr la suite completa.
+    """
+    calls = []
+    original = thread._video_feed.encode
+
+    def counting_encode(frame, fps=0.0):
+        calls.append(1)
+        return original(frame, fps=fps)
+
+    thread._video_feed.encode = counting_encode
+    return calls
+
+
 def _drain(state_queue, seconds: float):
     """Consume estados durante `seconds` y devuelve los recogidos."""
     estados = []
@@ -118,15 +139,17 @@ class TestBackgroundMonitoring:
 
     def test_render_resumes_when_window_shown_again(self, tmp_path):
         thread, q, _, restaurar = _start_pipeline(tmp_path, NEUTRAL)
+        encodes = _count_encodes(thread)
         try:
             thread.start()
             thread.set_ui_visible(False)
             _drain(q, 0.3)
+            ocultos = len(encodes)
 
             thread.set_ui_visible(True)
-            estados = _drain(q, 0.6)
+            _drain(q, 0.6)
 
-            assert any(s.frame_b64 is not None for s in estados), (
+            assert len(encodes) > ocultos, (
                 "al volver a mostrar la ventana debe reanudarse el render")
         finally:
             thread.stop()
@@ -158,12 +181,16 @@ class TestBackgroundMonitoring:
         """
         thread, q, _, restaurar = _start_pipeline(
             tmp_path, NEUTRAL, ui={"skip_render_when_hidden": False})
+        encodes = _count_encodes(thread)
         try:
             thread.start()
             thread.set_ui_visible(False)
-            estados = _drain(q, 0.6)
+            _drain(q, 0.2)
+            antes = len(encodes)
+            _drain(q, 0.6)
 
-            assert any(s.frame_b64 is not None for s in estados)
+            assert len(encodes) > antes, (
+                "con skip_render_when_hidden=false debe seguir codificando")
         finally:
             thread.stop()
             thread.join(timeout=5.0)

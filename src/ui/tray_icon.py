@@ -23,6 +23,9 @@ Menú
     Abrir panel        -> restaura la ventana de Flet
     Pausar monitoreo   -> congela el pipeline (reunión, videollamada, otra
                           persona delante de la cámara)
+    Recalibrar postura -> repite la calibración de la postura neutra (θc) y
+      y ojos              del EAR: si se calibró encorvado, o cambió la
+                          persona o la cámara
     Salir              -> cierre ordenado: cierra la sesión en SQLite
 
 La opción de pausa no es un adorno. Sin ella, el usuario que necesita dejar de
@@ -74,6 +77,7 @@ class TrayIcon:
     def __init__(self,
                  on_show: Optional[Callable[[], None]] = None,
                  on_toggle_pause: Optional[Callable[[bool], None]] = None,
+                 on_recalibrate: Optional[Callable[[], None]] = None,
                  on_quit: Optional[Callable[[], None]] = None,
                  title: str = "Monitor Postural y Fatiga"):
         """
@@ -90,6 +94,7 @@ class TrayIcon:
         """
         self._on_show = on_show
         self._on_toggle_pause = on_toggle_pause
+        self._on_recalibrate = on_recalibrate
         self._on_quit = on_quit
         self._title = title
 
@@ -157,6 +162,8 @@ class TrayIcon:
         return pystray.Menu(
             pystray.MenuItem("Abrir panel", self._handle_show, default=True),
             pystray.MenuItem(_pause_label, self._handle_toggle_pause),
+            pystray.MenuItem("Recalibrar postura y ojos",
+                             self._handle_recalibrate),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Salir", self._handle_quit),
         )
@@ -194,6 +201,20 @@ class TrayIcon:
             self._icon.update_menu()
         logger.info("Monitoreo %s desde la bandeja.",
                     "PAUSADO" if self._paused else "reanudado")
+
+    def _handle_recalibrate(self, icon=None, item=None) -> None:
+        """
+        La postura neutra y el EAR se calibran al arrancar. Si el usuario
+        se calibró encorvado, o se sienta otra persona, esta opción repite
+        la calibración sin reiniciar la aplicación ni cortar la sesión.
+        """
+        if self._on_recalibrate:
+            try:
+                self._on_recalibrate()
+            except Exception:
+                logger.exception("Error al solicitar la recalibración.")
+        self.notify("Recalibrando",
+                    "Siéntate recto y mira la pantalla unos segundos.")
 
     def _handle_quit(self, icon=None, item=None) -> None:
         logger.info("Salida solicitada desde la bandeja.")

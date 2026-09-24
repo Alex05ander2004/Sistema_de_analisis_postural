@@ -8,9 +8,9 @@
 ## ¿Qué hace este sistema?
 
 Detecta en **tiempo real** y **100% local** (sin nube):
-- 🔴 **Cabeza adelantada** — ángulo cervical θc > 30° durante > 5 s
+- 🔴 **Cabeza adelantada** — θc más de **15° por encima de tu postura neutra** (calibrada sentado recto en los primeros 20 s) durante > 5 s
 - 🟠 **Asimetría de hombros** — |ΔE| > 10° durante > 8 s
-- 👁️ **Fatiga ocular** — EAR por debajo del umbral **calibrado para cada usuario** (0.70 × su EAR de ojo abierto, medido en los primeros 20 s) durante > 3 s
+- 👁️ **Fatiga ocular** — EAR por debajo del umbral **calibrado para cada usuario** (0.65 × su EAR de ojo abierto, medido en los primeros 20 s) durante > 3 s
 - 😴 **Bostezo** — apertura bucal (MAR) ≥ 0.45 durante > 3 s
 - 💤 **Somnolencia** — PERCLOS ≥ 15% en una ventana móvil de 60 s
 
@@ -37,7 +37,30 @@ usuario trabaja en otras aplicaciones:
   videollamada, ese LED apagado es la única confirmación creíble de que no se
   le está grabando. Al reanudar, los temporizadores arrancan de cero.
 
-Menú de bandeja: **Abrir panel** · **Pausar/Reanudar monitoreo** · **Salir**.
+Menú de bandeja: **Abrir panel** · **Pausar/Reanudar monitoreo** ·
+**Recalibrar postura y ojos** · **Salir**.
+
+### Calibración al arrancar (20 s)
+
+Al iniciar, el sistema mide **tu** postura neutra y **tu** ojo abierto, y a
+partir de ahí evalúa desviaciones respecto a ellos. La banda superior lo
+indica: *"Calibrando: siéntate recto y mira la pantalla con normalidad"*.
+**Si te calibras encorvado, esa postura pasa a ser tu "neutra"**: usa
+*Recalibrar postura y ojos* en la bandeja para repetirlo.
+
+Por qué: con una sola cámara frontal, ni el θc absoluto ni el EAR absoluto son
+fiables (ver `docs/validation_report.md` §3.6 y §3.7). La profundidad `z` de
+MediaPipe se mide desde la cadera, que queda fuera del encuadre, y marcaba
+~48° a un usuario sentado recto; el umbral de EAR de la literatura clasificaba
+como cerrado el ojo abierto de otro.
+
+### Si no ves las notificaciones
+
+Windows las entrega al centro de notificaciones (`Win + N`), pero con
+**No molestar** activo no muestra el aviso emergente. Configuración → Sistema →
+Notificaciones: desactiva *No molestar* (y revisa sus reglas automáticas por
+horario), o añade **Monitor Postural y Fatiga** en *Establecer notificaciones
+prioritarias* para que sus avisos lo atraviesen.
 
 ### Régimen de alertas
 
@@ -63,10 +86,13 @@ sigue siendo no intrusivo. Toda alerta, salga por el canal que salga, queda
 además en **Alertas recientes** del panel de telemetría y en la tabla `events`
 de SQLite.
 
-> **Escala de θc.** 0° = cabeza alineada sobre los hombros. El umbral de 30°
-> corresponde a unos **12 cm** de desplazamiento anterior de la cabeza en un
-> adulto de talla media. La componente sagital es aproximadamente el
-> complemento del Ángulo Craneovertebral clínico: `CVA ≈ 90° − θc_sagital`.
+> **Escala de θc — solo en teoría.** Con landmarks exactos, 0° = cabeza
+> alineada sobre los hombros y 30° ≈ 12 cm de adelantamiento, con
+> `CVA ≈ 90° − θc_sagital`. **Con una cámara frontal real esa escala no se
+> cumple:** la componente sagital depende de la profundidad `z` de MediaPipe,
+> cuyo origen es la cadera (fuera del encuadre), y un usuario sentado recto
+> marca ~48°. Por eso la alerta usa la **desviación respecto a tu postura
+> neutra**, no el valor absoluto. Detalle en `docs/validation_report.md` §3.7.
 
 ---
 
@@ -96,7 +122,7 @@ de SQLite.
          └── AlertNotifier  → modal bloqueante (solo somnolencia)
 
 [TrayIcon — hilo propio]
-  └── Abrir panel · Pausar/Reanudar · Salir
+  └── Abrir panel · Pausar/Reanudar · Recalibrar postura y ojos · Salir
 ```
 
 Con la ventana oculta, `VideoFeed.encode()` y los `draw()` se omiten: todo lo
@@ -192,7 +218,7 @@ postural-fatigue-system/
 │       ├── toast_notifier.py # Notificación del SO (no intrusiva)
 │       ├── tray_icon.py      # Icono de bandeja (segundo plano)
 │       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
-├── tests/                    # 235 tests, ~23 s, sin cámara ni MediaPipe
+├── tests/                    # 269 tests, ~23 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
@@ -202,7 +228,8 @@ postural-fatigue-system/
 │   ├── test_stress.py               # Oclusión, ruido, distancia, transiciones
 │   ├── test_background_alerts.py    # Enrutado de alertas, toast y bandeja
 │   ├── test_background_pipeline.py  # Segundo plano y pausa, con pipeline real
-│   └── test_session_2026_09_24.py   # Regresiones de la 1.ª sesión real (EAR, distancia)
+│   ├── test_session_2026_09_24.py   # Regresiones de la 1.ª sesión real (EAR, distancia)
+│   └── test_posture_reference.py    # θc relativo, indicador 2D, notificaciones
 └── docs/
     ├── checklist_pruebas.md             # Pruebas manuales (cámara, bandeja, Cap. IV)
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
@@ -218,7 +245,9 @@ Edita `config/thresholds.json` para ajustar sin recompilar:
 
 | Parámetro | Default | Descripción |
 |---|---|---|
-| `cervical_angle_max_deg` | 30.0° | Umbral de cabeza adelantada (validado por experto) |
+| `cervical_mode` | `reference` | θc relativo a tu postura neutra. `absolute` usa `cervical_angle_max_deg` |
+| `cervical_deviation_max_deg` | 15.0° | Desviación sobre la postura neutra que dispara la alerta — **PROVISIONAL**, fijar con D.3 |
+| `cervical_angle_max_deg` | 30.0° | Umbral absoluto de cabeza adelantada (experto) — solo en modo `absolute` |
 | `cervical_alert_window_sec` | 5.0 s | Ventana temporal para alerta postural |
 | `shoulder_asymmetry_max_deg` | 10.0° | Umbral de asimetría escapular (validado por experto) |
 | `shoulder_alert_window_sec` | 8.0 s | Ventana de hombros — distinta de la cervical, a petición del experto |
@@ -255,7 +284,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (235 tests, ~23 s, sin cámara ni MediaPipe)
+# Todos los tests (269 tests, ~23 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -326,7 +355,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 235/235 |
+| Tests | 100% verde | `pytest tests/` | ✅ 269/269 |
 
 ---
 

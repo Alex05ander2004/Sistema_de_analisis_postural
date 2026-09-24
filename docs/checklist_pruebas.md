@@ -44,6 +44,12 @@ python -m src.ui.app_ui
 
 ### A.3 Alertas no intrusivas
 
+> **Antes de empezar: desactiva "No molestar"** (Configuración → Sistema →
+> Notificaciones), o añade *Monitor Postural y Fatiga* como app prioritaria.
+> Con "No molestar" activo, Windows guarda el aviso en el centro de
+> notificaciones (`Win + N`) pero **no lo muestra**. Revisa también las reglas
+> automáticas por horario: las sesiones del 2026-09-24 fueron a las 4 AM.
+
 | # | Prueba | Resultado esperado | ✓ |
 |---|---|---|---|
 | 10 | Con la ventana **cerrada** (en bandeja), ponte a escribir en Word o el navegador y **adelanta la cabeza 6+ segundos** | Aparece un **toast** en la esquina inferior derecha: "Cabeza adelantada" | ☐ |
@@ -62,7 +68,10 @@ python -m src.ui.app_ui
 
 | # | Prueba | Resultado esperado | ✓ |
 |---|---|---|---|
-| 17a | Arranca la app y mira a la pantalla con normalidad 20 s | La fila del EAR pasa de **"calibrando N%"** a **"umbral 0.1xx"**. Anota el valor: _______ | ☐ |
+| 17a | Arranca la app, **siéntate recto** y mira a la pantalla con normalidad 20 s | La banda superior dice *"Calibrando… siéntate recto"*. Al terminar, la fila del EAR muestra **"umbral 0.1xx"** y la cervical **"Desviación cervical (Δθc) · neutro NN°"**. Anota ambos: _______ / _______ | ☐ |
+| 17a2 | Sentado recto 1 min tras calibrar | Δθc se queda cerca de **0°** (verde) y **no** salen alertas de cabeza adelantada. *Antes marcaba 35–45° y avisaba cada 30 s* | ☐ |
+| 17a3 | Adelanta la cabeza a propósito 6 s | Δθc sube. **Anota hasta cuánto: _____°**. Si pasa de 15°, sale el aviso. *Este número es clave: ver D.3* | ☐ |
+| 17a4 | Bandeja → *Recalibrar postura y ojos* | Vuelve la banda de calibración y se repite | ☐ |
 | 17b | Tras calibrar, trabaja 2 min con normalidad (parpadeando) | PERCLOS se queda **bajo** (< 0.10) y **no** sale somnolencia. *Antes de la corrección daba ~0.65 y una alerta cada 30 s* | ☐ |
 | 17c | Cierra los ojos 4 s seguidos | Toast de **fatiga ocular** | ☐ |
 | 17 | Cierra los ojos de forma intermitente durante ~1 min (PERCLOS ≥ 15% de la ventana de 60 s) | Aparece el **modal bloqueante** de somnolencia, no un toast | ☐ |
@@ -187,24 +196,50 @@ python src/tools/benchmark_mediapipe.py --frames 300
 > Sobre una habitación vacía MediaPipe no llega a ejecutar la red de landmarks
 > y el resultado sale artificialmente rápido. Tiene que haber alguien delante.
 
-### D.3 Re-medir la tabla de θc *(§4.4 está marcada obsoleta)*
+### D.3 Medir la desviación de θc — ⚠️ LA MÁS IMPORTANTE
 
-Con el FOV ya calibrado, a 0.50–0.70 m y cámara a la altura de los ojos:
+> **Actualizado el 2026-09-24.** Con cámara frontal el θc **absoluto** no es
+> medible (§3.7 del reporte: la profundidad `z` de MediaPipe se mide desde la
+> cadera, fuera del encuadre, y un usuario recto marca ~48°). Lo que hay que
+> medir es la **desviación Δθc** respecto a la postura neutra.
+>
+> Esta medición decide si el umbral provisional de **15°** sirve. Si una
+> cabeza adelantada real da menos de 15° de Δθc, **el sistema estaría ciego a
+> ella** — en julio la posición más adelantada posible dio +13°.
 
-| # | Postura | θc esperado | θc medido | ✓ |
-|---|---|---|---|---|
-| 47 | Correcta | < 5° | _____ | ☐ |
-| 48 | Inclinación leve (~6 cm) | ~15° | _____ | ☐ |
-| 49 | Moderada (~9-12 cm) | ~22-29° | _____ | ☐ |
-| 50 | Severa | > 35° | _____ | ☐ |
+Con el FOV ya calibrado, a 0.50–0.70 m y cámara a la altura de los ojos. Mide
+el adelantamiento de la cabeza con una regla (distancia del trago de la oreja
+a la vertical del hombro, o con ayuda de otra persona mirando de lado):
+
+| # | Postura | θc medido | Δθc (θc − neutro) | Relación cuello/hombros | ✓ |
+|---|---|---|---|---|---|
+| 47 | **Neutra**, sentado recto (referencia) | _____ | 0 | _____ | ☐ |
+| 48 | Cabeza adelantada ~6 cm | _____ | _____ | _____ | ☐ |
+| 49 | Cabeza adelantada ~9 cm | _____ | _____ | _____ | ☐ |
+| 50 | Cabeza adelantada ~12 cm | _____ | _____ | _____ | ☐ |
+| 50b | Encorvado (como al leer de cerca) | _____ | _____ | _____ | ☐ |
 
 ```bash
 python src/tools/calibration_mode.py --duration 300
 ```
 
-> Registra también **componente sagital**, **lateral** y **distancia**: el CSV
-> ya las produce. La sagital es la que se contrasta con el CVA clínico
-> (`CVA ≈ 90° − θc_sagital`) y da la comparación más fuerte con la literatura.
+Mantén cada postura ~30 s y anota en qué segundo empieza cada una: el CSV
+(`data/calibration_*.csv`) registra θc, sus componentes y `neck_ratio`, y
+después se calcula la mediana de cada tramo.
+
+**Qué decidir con estos datos:**
+
+1. **El umbral de desviación.** Toma el Δθc de la fila 12 cm, que es la
+   cabeza adelantada que el experto consideró de riesgo con 30° absolutos.
+   Si queda **por encima de 15°**, el umbral sirve; si queda **por debajo**,
+   hay que bajarlo (sin acercarse al ruido de la postura neutra).
+2. **Qué indicador usar.** Si la relación cuello/hombros cambia de forma más
+   clara y estable que Δθc entre neutra y 12 cm, es mejor candidato:
+   **avísame con los números** y lo cambiamos.
+
+> **Prueba rápida sin CSV:** con la app abierta, la fila del panel muestra
+> **"Desviación cervical (Δθc)"** en vivo. Adelanta la cabeza a propósito y
+> mira hasta cuánto sube.
 
 ### D.4 Calibrar el umbral de bostezo (MAR)
 

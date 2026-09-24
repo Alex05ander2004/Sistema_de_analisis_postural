@@ -143,12 +143,27 @@ class TestAdaptiveThreshold:
         assert fsm.blink_analyzer.perclos < 0.15
 
     def test_calibrated_threshold_matches_the_session(self):
-        """Mediana 0.200 × ratio 0.70 → umbral ≈ 0.140."""
+        """Mediana 0.200 × ratio 0.65 → umbral ≈ 0.130."""
         fsm = make_fsm(ear_threshold_mode="adaptive")
         feed(fsm, open_eye_ear_stream(30))
 
         assert not fsm.ear_calibrating
-        assert fsm.ear_threshold == pytest.approx(0.140, abs=0.01)
+        assert fsm.ear_threshold == pytest.approx(0.130, abs=0.01)
+
+    def test_relaxed_eyes_after_attentive_calibration_stay_open(self):
+        """
+        REGRESIÓN — sesión 2 del 2026-09-24. La calibración captó los ojos
+        atentos (0.257) y al trabajar se relajaron un 9% (0.236). Con ratio
+        0.70 el PERCLOS rozó el límite; con 0.65 debe quedar holgado.
+        """
+        fsm = make_fsm(ear_threshold_mode="adaptive")
+        rng = random.Random(7)
+        feed(fsm, [rng.gauss(0.257, 0.012) for _ in range(int(25 * FPS))])
+        alerts, _ = feed(fsm, [rng.gauss(0.236, 0.02)
+                               for _ in range(int(120 * FPS))])
+
+        assert not any(a.alert_type == AlertType.DROWSINESS for a in alerts)
+        assert fsm.blink_analyzer.perclos < 0.08
 
     def test_real_eye_closure_is_still_detected(self):
         """
@@ -238,7 +253,7 @@ class TestEarBaselineCalibrator:
         for i, e in enumerate(samples):
             cal.update(e, now=i * 0.05)
         assert cal.baseline == pytest.approx(0.30)
-        assert cal.threshold == pytest.approx(0.21)
+        assert cal.threshold == pytest.approx(0.195)     # 0.65 × 0.30
 
     def test_threshold_is_clamped(self):
         cal = EarBaselineCalibrator(calibration_sec=0.0, min_samples=1,

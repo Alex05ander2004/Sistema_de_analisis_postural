@@ -67,6 +67,7 @@ from src.vision.geometry import (
     calculate_shoulder_asymmetry,
     calculate_avg_ear,
     calculate_mouth_opening,
+    calculate_neck_ratio,
     estimate_distance_m,
     landmarks_visible,
 )
@@ -173,6 +174,7 @@ class InferenceThread(threading.Thread):
         self._ui_visible = threading.Event()
         self._ui_visible.set()
         self._paused = threading.Event()
+        self._recalibrate_requested = threading.Event()
 
         ui_cfg_early = thresholds.get("ui", {})
         self._skip_render_when_hidden = bool(
@@ -226,7 +228,7 @@ class InferenceThread(threading.Thread):
         # REINICIABA los temporizadores de postura.
         self._smoothers = MetricSmootherBank(
             ["theta_c", "theta_sag", "theta_lat", "delta_e", "ear", "mar",
-             "distance"],
+             "distance", "neck_ratio"],
             median_window=smooth_cfg.get("median_window", 5),
             alpha=smooth_cfg.get("ema_alpha", 0.35),
         )
@@ -352,6 +354,10 @@ class InferenceThread(threading.Thread):
                     self._stop_event.wait(0.2)
                     continue
 
+                if self._recalibrate_requested.is_set():
+                    self._recalibrate_requested.clear()
+                    self._fsm.recalibrate_all()
+
                 frame = self._vt.get_frame(timeout=0.05)
                 if frame is None:
                     continue
@@ -400,6 +406,10 @@ class InferenceThread(threading.Thread):
                 metrics.perclos = timer_status["perclos"]
                 metrics.blink_rate_per_min = timer_status["blink_rate_per_min"]
                 metrics.ear_threshold = timer_status.get("ear_threshold")
+                baseline = timer_status.get("cervical_baseline")
+                metrics.cervical_baseline = baseline
+                if baseline is not None and metrics.pose_detected:
+                    metrics.cervical_deviation = metrics.cervical_angle - baseline
 
                 # --- Bitácora de métricas (cada N frames) ------------------
                 if self._frame_n % self._log_metrics_every_n == 0:
@@ -503,6 +513,14 @@ class InferenceThread(threading.Thread):
                 metrics.cervical_lateral  = self._smoothers.update("theta_lat", theta_lat)
                 metrics.shoulder_asymmetry = self._smoothers.update("delta_e", delta_e)
 
+                # Indicador 2D sin profundidad: solo se mide y registra, para
+                # compararlo con θc en la validación (ver geometry.py).
+                raw_neck = calculate_neck_ratio(pose_result.landmarks,
+                                                self._frame_size)
+                if raw_neck is not None:
+                    metrics.neck_ratio = self._smoothers.update(
+                        "neck_ratio", raw_neck)
+
                 metrics.pose_valid = visible and self._distance_ok(metrics.distance_m)
             except Exception as e:
                 logger.debug("geometry error (pose): %s", e)
@@ -515,6 +533,7 @@ class InferenceThread(threading.Thread):
             self._smoothers.reset("theta_lat")
             self._smoothers.reset("delta_e")
             self._smoothers.reset("distance")
+            self._smoothers.reset("neck_ratio")
             metrics.pose_valid = False
 
         # --- Fatiga ----------------------------------------------------
@@ -583,6 +602,14 @@ class InferenceThread(threading.Thread):
         """
         category = self._hint_state.update(self._hint_category(metrics),
                                            metrics.monotonic)
+
+        # Con el encuadre correcto, la banda guía la calibración inicial:
+        # la postura de referencia y el EAR se miden en los primeros segundos
+        # y solo valen si el usuario está sentado recto mirando la pantalla.
+        if category == "":
+            calib = self._calibration_hint()
+            if calib:
+                return calib
         d = metrics.distance_m
         rango = f"{self._min_dist:.2f}–{self._max_dist:.2f} m"
 
@@ -599,6 +626,32 @@ class InferenceThread(threading.Thread):
         if category == "low_visibility":
             return "Landmarks poco visibles — mira de frente a la cámara."
         return ""
+
+    def _calibration_hint(self) -> str:
+        """Instrucción mientras se calibran la postura neutra o el EAR."""
+        st = self._fsm.get_timers_status()
+        pendientes = []
+        if st.get("posture_calibrating"):
+            pendientes.append(st.get("posture_calibration_progress", 0.0))
+        if st.get("ear_calibrating"):
+            pendientes.append(st.get("ear_calibration_progress", 0.0))
+        if not pendientes:
+            return ""
+        progreso = min(pendientes)
+        return (f"Calibrando ({progreso * 100:.0f}%): siéntate recto y mira "
+                f"la pantalla con normalidad unos segundos.")
+
+    def recalibrate(self) -> None:
+        """
+        Pide recalibrar la postura neutra y el EAR (menú de bandeja): para
+        cuando se calibró encorvado o se sienta otra persona.
+
+        Solo levanta una señal. Se llama desde el hilo de la bandeja, y el FSM
+        lo usa el hilo de inferencia sin cerrojos: el cambio real se hace al
+        inicio de la siguiente iteración de run(), en el propio hilo.
+        """
+        self._recalibrate_requested.set()
+        logger.info("Recalibración solicitada por el usuario.")
 
     def stop(self):
         self._stop_event.set()
@@ -901,6 +954,7 @@ def main(page: ft.Page):
     tray = TrayIcon(
         on_show=_show_window,
         on_toggle_pause=_on_tray_pause,
+        on_recalibrate=inference_thread.recalibrate,
         on_quit=_on_tray_quit,
     ) if background_enabled else None
 

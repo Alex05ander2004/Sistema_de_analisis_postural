@@ -62,11 +62,72 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_ICON_PATH = PROJECT_ROOT / "assets" / "icon.ico"
+# Las notificaciones de Windows solo admiten imágenes PNG/JPG/GIF: el .ico
+# sirve para la ventana y la bandeja, no para el toast.
+_ICON_PATH = PROJECT_ROOT / "assets" / "icon.png"
 
-# El app_id es lo que Windows muestra como emisor del toast y lo que usa para
-# agrupar las notificaciones en el Centro de Actividades.
-_APP_ID = "Monitor Postural y Fatiga"
+# ---------------------------------------------------------------------------
+# Identidad de la aplicación ante Windows (AUMID)
+# ---------------------------------------------------------------------------
+#
+# Por qué no se veían las notificaciones (sesión del 2026-09-24)
+# ---------------------------------------------------------------
+# El identificador anterior era "Monitor Postural y Fatiga". Windows aceptaba
+# los toasts —aparecían en ToastNotificationManager.History— pero el shell
+# no mostraba ni el aviso emergente ni la entrada en el centro de
+# notificaciones. Dos motivos, ambos en las reglas de Windows:
+#
+#   1. Un AppUserModelID NO puede contener espacios (máximo 128 caracteres,
+#      forma recomendada Compañía.Producto). winotify afirma que sí admite
+#      espacios; contradice la especificación de Windows.
+#   2. Una aplicación de escritorio no empaquetada (sin MSIX ni acceso
+#      directo con AUMID en el menú Inicio) debe registrar su AUMID en
+#      HKCU\Software\Classes\AppUserModelId\<AUMID>, con nombre visible e
+#      icono. Es el mecanismo que documenta Microsoft para este caso.
+#
+# El registro se hace en el perfil del usuario (HKCU), no requiere permisos de
+# administrador y equivale a lo que haría un instalador. Para retirarlo basta
+# con borrar esa clave.
+_APP_ID = "UNSA.MonitorPostural"
+_APP_DISPLAY_NAME = "Monitor Postural y Fatiga"
+_AUMID_KEY = rf"Software\Classes\AppUserModelId\{_APP_ID}"
+
+
+def aumid_is_valid(aumid: str) -> bool:
+    """Reglas de Windows para un AppUserModelID: sin espacios, ≤ 128 caracteres."""
+    return bool(aumid) and len(aumid) <= 128 and " " not in aumid
+
+
+def ensure_aumid_registered(winreg_module=None) -> bool:
+    """
+    Registra la identidad de la app para que Windows muestre sus toasts.
+
+    Idempotente: si la clave ya existe con los mismos valores, reescribirla
+    no cambia nada. Devuelve True si el registro quedó hecho.
+
+    Parameters
+    ----------
+    winreg_module:
+        Inyectable para las pruebas; por defecto el módulo `winreg` real.
+    """
+    if sys.platform != "win32" and winreg_module is None:
+        return False
+    try:
+        winreg = winreg_module
+        if winreg is None:
+            import winreg as winreg  # noqa: PLW0127
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _AUMID_KEY, 0,
+                                winreg.KEY_WRITE) as key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ,
+                              _APP_DISPLAY_NAME)
+            if _ICON_PATH.exists():
+                winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ,
+                                  str(_ICON_PATH))
+        return True
+    except Exception:
+        logger.exception("No se pudo registrar el AUMID de la aplicación; "
+                         "Windows podría no mostrar las notificaciones.")
+        return False
 
 # Título corto por tipo de alerta. El toast tiene poco espacio: el título debe
 # decir qué pasa sin que haga falta leer el cuerpo.
@@ -126,6 +187,8 @@ class ToastNotifier:
         self._fallback = fallback
         self._enabled = enabled
         self._native = _winotify_available() if enabled else False
+        if self._native:
+            ensure_aumid_registered()
 
         # Un solo worker: los toasts deben salir en orden y nunca en paralelo,
         # y así una ráfaga de alertas no abre N procesos de PowerShell a la vez.

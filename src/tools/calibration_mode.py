@@ -58,6 +58,7 @@ from src.vision.geometry import (
     calculate_ear,
     calculate_mouth_opening,
     estimate_distance_m,
+    calculate_neck_ratio,
 )
 
 logging.basicConfig(level=logging.WARNING)  # Silenciar MediaPipe
@@ -128,6 +129,7 @@ def calibrate(source: int = -1, duration_sec: int = 300,
         "ear_left", "ear_right", "ear_avg",
         "mouth_opening",
         "distance_m",
+        "neck_ratio",
         "pose_detected", "face_detected",
         "fps",
     ]
@@ -222,6 +224,7 @@ def calibrate(source: int = -1, duration_sec: int = 300,
             theta_c = delta_e = ear_l = ear_r = ear_avg = mouth = 0.0
             theta_sag = theta_lat = 0.0
             distancia = None
+            neck = None
 
             if pose_result.detected and len(pose_result.landmarks) >= 13:
                 try:
@@ -231,6 +234,11 @@ def calibrate(source: int = -1, duration_sec: int = 300,
                         pose_result.landmarks, frame_size)
                     distancia = estimate_distance_m(
                         pose_result.landmarks, frame_size, hfov_deg)
+                    # Indicador 2D sin profundidad: se registra junto a θc
+                    # para comparar en D.3 cuál discrimina mejor la cabeza
+                    # adelantada desde una cámara frontal.
+                    neck = calculate_neck_ratio(pose_result.landmarks,
+                                                frame_size)
                 except Exception:
                     pass
 
@@ -257,6 +265,7 @@ def calibrate(source: int = -1, duration_sec: int = 300,
                 "ear_avg":       round(ear_avg, 4),
                 "mouth_opening": round(mouth, 4),
                 "distance_m":    round(distancia, 3) if distancia is not None else "",
+                "neck_ratio":    round(neck, 4) if neck is not None else "",
                 "pose_detected": int(pose_result.detected),
                 "face_detected": int(face_result.detected),
                 "fps":           round(fps_actual, 1),

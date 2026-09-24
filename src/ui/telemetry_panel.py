@@ -160,6 +160,22 @@ class MetricRow:
     def set_label(self, text: str) -> None:
         self._label_text.value = text
 
+    def set_max(self, max_val: float) -> None:
+        """Escala de la barra de progreso."""
+        self.max_val = max_val
+
+    def update_pending(self) -> None:
+        """
+        Sin valor interpretable todavía (calibración en curso). Se muestra un
+        guion en gris en lugar de un número coloreado: pintar en rojo un θc
+        absoluto sesgado es justo lo que confundía al usuario.
+        """
+        self._dot.bgcolor = "#555555"
+        self._value_text.value = "—"
+        self._value_text.color = ft.colors.WHITE38
+        self._progress.value = 0
+        self._progress.color = "#555555"
+
     def update(self, value: float) -> None:
         """Actualiza la fila con el nuevo valor."""
         color = _traffic_color(
@@ -462,6 +478,41 @@ class TelemetryPanel:
             for h, l, c in self._alert_history
         ] or [self._alert_log_empty]
 
+    def _sync_cervical_row(self, metrics, timer_status: dict) -> None:
+        """
+        Muestra θc como desviación respecto a la postura neutra del usuario.
+
+        En la sesión del 2026-09-24 el panel mostraba el θc absoluto (35-45°)
+        con el usuario sentado recto, porque la componente de profundidad de
+        MediaPipe no es fiable con una cámara frontal. Lo que el usuario debe
+        ver es cuánto se aparta de SU postura neutra: ~0° sentado como al
+        calibrar, positivo al adelantar la cabeza.
+        """
+        if timer_status.get("cervical_mode") != "reference":
+            self._row_cervical.update(metrics.cervical_angle)
+            return
+
+        if timer_status.get("posture_calibrating"):
+            progreso = timer_status.get("posture_calibration_progress", 0.0)
+            self._row_cervical.set_label(
+                f"Postura · calibrando {progreso * 100:.0f}% (siéntate recto)")
+            self._row_cervical.update_pending()
+            return
+
+        dev = getattr(metrics, "cervical_deviation", None)
+        dev_max = timer_status.get("cervical_deviation_max", 15.0)
+        base = timer_status.get("cervical_baseline")
+        self._row_cervical.set_thresholds(warn_threshold=dev_max * 0.7,
+                                          alert_threshold=dev_max)
+        self._row_cervical.set_max(dev_max * 1.5)
+        self._row_cervical.set_label(
+            "Desviación cervical (Δθc)"
+            + (f" · neutro {base:.0f}°" if base is not None else ""))
+        if dev is None:
+            self._row_cervical.update_pending()
+        else:
+            self._row_cervical.update(dev)
+
     def _sync_ear_row(self, timer_status: dict) -> None:
         """
         Ajusta el semáforo del EAR al umbral vigente del usuario.
@@ -503,7 +554,7 @@ class TelemetryPanel:
         timer_status:
             Diccionario de FusionFSM.get_timers_status().
         """
-        self._row_cervical.update(metrics.cervical_angle)
+        self._sync_cervical_row(metrics, timer_status or {})
         self._row_shoulder.update(abs(metrics.shoulder_asymmetry))
         self._sync_ear_row(timer_status or {})
         self._row_ear.update(metrics.ear_avg)

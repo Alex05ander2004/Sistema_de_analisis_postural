@@ -442,3 +442,54 @@ def estimate_distance_m(pose_landmarks: list,
 
     focal_px = (w / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
     return float(biacromial_width_m * focal_px / shoulder_px)
+
+
+# ---------------------------------------------------------------------------
+# 6. Relación cuello / hombros — indicador 2D sin profundidad
+# ---------------------------------------------------------------------------
+
+def calculate_neck_ratio(
+        pose_landmarks: list,
+        frame_size: Tuple[int, int] = DEFAULT_FRAME_SIZE) -> Optional[float]:
+    """
+    Altura aparente del cuello dividida por el ancho de hombros, en el plano
+    de la imagen (sin la coordenada z).
+
+        altura = y(punto medio de hombros) - y(punto medio de orejas)
+        ratio  = altura / ||P11 - P12||
+
+    Por qué existe
+    --------------
+    La componente sagital de θc depende de la profundidad `z` de MediaPipe.
+    Con una sola cámara frontal y las caderas fuera del encuadre (el origen de
+    `z` es el punto medio de la cadera) esa profundidad no es una medición: en
+    la sesión del 2026-09-24 MediaPipe situó las orejas ~1.3 alturas de cuello
+    por delante de los hombros con el usuario sentado recto, y θc marcó ~48°.
+
+    Este indicador usa solo x e y. Al adelantar la cabeza y encorvarse, la
+    cabeza baja respecto a los hombros y la relación disminuye; al dividir por
+    el ancho de hombros es independiente de la distancia a la cámara.
+
+    No sustituye a θc ni dispara alertas: se registra junto a él para poder
+    comparar en la sesión de validación cuál de los dos discrimina mejor la
+    cabeza adelantada desde una cámara frontal.
+
+    Returns
+    -------
+    float | None
+        Relación adimensional (típico ~0.4-0.6 sentado recto), o None si los
+        hombros no tienen ancho aparente.
+    """
+    if len(pose_landmarks) < 13:
+        return None
+    p7  = _to_iso_2d(pose_landmarks[LANDMARK_LEFT_EAR], frame_size)
+    p8  = _to_iso_2d(pose_landmarks[LANDMARK_RIGHT_EAR], frame_size)
+    p11 = _to_iso_2d(pose_landmarks[LANDMARK_LEFT_SHOULDER], frame_size)
+    p12 = _to_iso_2d(pose_landmarks[LANDMARK_RIGHT_SHOULDER], frame_size)
+
+    shoulder_width = _euclidean(p11, p12)
+    if shoulder_width < 1e-6:
+        return None
+    ear_y = (p7[1] + p8[1]) / 2.0
+    shoulder_y = (p11[1] + p12[1]) / 2.0
+    return float((shoulder_y - ear_y) / shoulder_width)
