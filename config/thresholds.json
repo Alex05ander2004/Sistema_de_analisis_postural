@@ -110,7 +110,20 @@
       {"id": "bostezo", "label": "Bostezo simulado", "expected_alert": "yawn"},
       {"id": "libre", "label": "Uso libre (sin protocolo)", "expected_alert": null, "scored": false}
     ],
-    "_conditions_comment": "expected_alert = tipo(s) de alerta que el sistema DEBE emitir en esa condición (null = ninguna: una alerta ahí es un falso positivo). scored=false excluye la condición de la matriz de confusión. Se pueden añadir condiciones (p. ej. cabeza_adelantada_6cm) sin tocar código; el protocolo está en docs/protocolo_estudio.md."
+    "_conditions_comment": "expected_alert = tipo(s) de alerta que el sistema DEBE emitir en esa condición (null = ninguna: una alerta ahí es un falso positivo). scored=false excluye la condición de la matriz de confusión. Se pueden añadir condiciones (p. ej. cabeza_adelantada_6cm) sin tocar código; el protocolo está en docs/protocolo_estudio.md.",
+    "_modes_comment": "El MODO (laboratorio / campo), el código del participante y el FOV de su cámara NO van aquí: se guardan en data/estudio_local.json desde el botón 'Estudio' de la app, para que este archivo sea idéntico en todos los equipos (su huella se guarda en cada sesión como config_hash). Laboratorio = protocolo guiado con selector de condición (sesiones 'validacion'). Campo = uso diario en casa, sin selector, con línea base e intervención.",
+    "field": {
+      "baseline_days": 5,
+      "baseline_min_minutes": 60,
+      "_baseline_comment": "Línea base del estudio de campo: la app mide y REGISTRA las alertas (events.notified=0) pero no las muestra, hasta completar baseline_days días con al menos baseline_min_minutes de seguimiento real. La fase se decide al iniciar cada sesión con los días anteriores a hoy (todo un día queda en la misma fase). Después, intervención con avisos. Poner baseline_days=0 para desactivar la línea base.",
+      "planned_days": 15,
+      "valid_day_min_minutes": 120,
+      "valid_day_min_block_minutes": 60,
+      "_valid_day_comment": "Criterio de día VÁLIDO para el análisis (export_study.py): al menos valid_day_min_minutes de seguimiento real con un bloque continuo de al menos valid_day_min_block_minutes. Un bloque continuo es necesario porque la fatiga y el deterioro postural aparecen con el tiempo sostenido frente a la pantalla. Fijar ANTES de empezar el estudio y declararlo en el protocolo.",
+      "self_report": true,
+      "self_report_min_minutes": 30,
+      "_self_report_comment": "Encuesta diaria de 10 s (dolor de cuello/hombros, cansancio visual, somnolencia; 0-10) al salir de la app si hoy hubo al menos self_report_min_minutes de uso. Si el equipo se apagó sin pasar por 'Salir', se pregunta al abrir la app por el último día de uso (marcada como retrospectiva)."
+    }
   },
 
   "calibration": {
@@ -144,6 +157,8 @@
 
   "storage": {
     "db_path": "data/history.db",
+    "metrics_interval_sec": 1.0,
+    "_metrics_interval_sec_comment": "Una fila de metrics_log por segundo de seguimiento, sea cual sea el FPS del equipo (antes: cada 30 frames, que eran 1 s a 30 FPS pero 3 s a 10 FPS y hacía incomparables los equipos). ~3600 filas/hora, unos 0.5 MB/hora; 15 días de 4 h ≈ 30 MB.",
     "max_events_per_session": 10000,
     "session_export_format": "json"
   }

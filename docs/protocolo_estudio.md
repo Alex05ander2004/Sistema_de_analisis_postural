@@ -1,234 +1,319 @@
 # Protocolo del estudio con participantes
 
-> Cómo se recogen los datos para el Capítulo IV: cuántas personas, cuánto dura
-> cada sesión, qué hace el evaluador y cómo salen los resultados. Pensado para
-> el calendario de la **Fase 8** (16 oct – 15 nov de 2026).
+> Cómo se recogen los datos para el Capítulo IV: quiénes participan, cuánto
+> tiempo, qué hace el investigador, qué hace el participante y cómo salen los
+> resultados. Versión 2 (2026-10-29): estudio de **campo de 15 días** con
+> **validación al instalar**.
 
 ---
 
-## 1. Tamaño de muestra recomendado
+## 0. Resumen en una tabla
 
-**20 participantes como mínimo; 25 si el tiempo lo permite.** Con 30 no ganas
-casi nada en precisión estadística y sí pierdes días de calendario.
+| Parte | Cuándo | Dónde | Duración | Qué mide |
+|---|---|---|---|---|
+| **A. Validación** | Día 0, al instalar | Equipo del participante, con el investigador presente | ~25 min | ¿El sistema **acierta**? Sensibilidad, especificidad y precisión (matriz de confusión) |
+| **B1. Línea base** | Días de uso 1–5 | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
+| **B2. Intervención** | Días de uso 6–15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
+| **C. Cierre** | Al terminar | — | 10 min | Exportar los datos, cuestionarios de salida |
 
-La razón no es "cuántas personas" sino **cuántos tramos puntuables** salen. La
-precisión se mide por tramo (una condición mantenida ~40 s que el sistema
-acierta o falla), y la incertidumbre depende sobre todo de ese número:
-
-| Tramos puntuados | Margen del IC 95 % si la precisión real es 90 % |
-|---|---|
-| 100 | ± 5.9 puntos |
-| 140 | ± 5.0 |
-| 200 | ± 4.2 |
-| **340** (20 personas × 17 tramos) | **± 3.2** |
-
-(Aproximación normal de una proporción, `1.96·√(p(1−p)/n)`; el exportador usa
-el intervalo de Wilson, algo más prudente.)
-
-Con 20 personas y el guion de abajo salen ~340 tramos: suficientes para
-afirmar con razonable seguridad si se alcanza el ≥ 90 % del Capítulo I, y unos
-**60–80 tramos por condición**, que da un margen de ± 6.6–7.6 puntos por condición.
-
-**Una advertencia que debes declarar:** los tramos de una misma persona no son
-independientes (cada persona tiene su postura, su cara, su luz). El intervalo
-real es algo más ancho que el calculado. Por eso el exportador también da el
-resultado **por participante**: es la forma honesta de mostrar la dispersión
-entre personas. Con 20 personas el estudio es sólido como validación técnica,
-pero **no es una muestra para generalizar a la población** y así debe
-redactarse.
-
-**Inclusión y exclusión:** adultos sin las patologías que tu alcance excluye
-(escoliosis, hipercifosis, collarines, lesiones cervicales temporales).
+Las dos partes responden preguntas distintas. En casa nadie anota qué postura
+tenía la persona en cada momento, así que **la precisión solo puede salir de la
+parte A**. El **efecto del sistema** solo puede salir de la parte B, comparando a
+cada persona consigo misma (diseño A-B intra-sujeto).
 
 ---
 
-## 2. Duración: una sesión de 45 minutos por persona
+## 1. Muestra
 
-Tu calendario deja unos 17 días para toda la Fase 8, que además incluye al
-especialista. Un estudio longitudinal de varias semanas **no cabe**. Lo viable,
-y lo que recomiendo, es **una sola sesión de unos 45 minutos** por participante:
+**25 participantes que terminen el estudio. Recluta 28–30**, porque en un
+seguimiento de 15 días siempre hay abandonos (equipo averiado, viaje, pérdida
+de interés).
 
-| Min | Qué se hace |
-|---|---|
-| 0–5 | Explicación, consentimiento y asignación del **código** (P01…) |
-| 5–8 | Colocación (cámara a la altura de los ojos, 0.50–0.70 m) y **calibración guiada** |
-| 8–23 | **Bloque guiado**: 17 tramos etiquetados (ver §4). Es lo que da la precisión |
-| 23–38 | **Uso libre**: trabajo propio (leer, escribir) con el sistema vigilando, sin guion |
-| 38–45 | Cierre: valoración subjetiva de los avisos (1–5) y exportar |
+- **Inclusión:** adultos que trabajen o estudien frente a una computadora con
+  Windows al menos 2 h diarias, con cámara web (integrada o externa).
+- **Exclusión:** patologías que el alcance excluye (escoliosis, hipercifosis,
+  collarín, lesión cervical reciente).
+- **Equipo:** Windows 10/11. Comprobar en la instalación que la app alcanza al
+  menos **10 FPS** (se ve en la ventana). Por debajo, la medición se degrada y
+  ese equipo no sirve.
 
-El **bloque guiado** responde a "¿detecta bien?" (precisión, latencia). El **uso
-libre** responde a "¿cómo se comporta en trabajo real?": alertas por hora,
-porcentaje del tiempo con la cabeza desviada, tiempo que tarda la persona en
-corregir tras un aviso, y la evolución entre la primera y la segunda mitad.
-
-15 minutos de uso libre no son una jornada laboral, y no sirven para hablar de
-adherencia a largo plazo. Si en tu tesis quieres medir "progreso", declara que
-es **progreso dentro de la sesión** y deja el seguimiento de varios días como
-trabajo futuro.
-
-**Opcional, solo si hay tiempo:** pedir a 5–8 participantes que usen la app dos
-o tres días en su propio equipo (1–2 h al día, con la condición "libre").
-Aporta datos ecológicos, pero no pongas en riesgo la fecha del 15 de noviembre
-por ello. Las bases de cada equipo se unen con `export_study.py --db a.db b.db`.
-
-**Cálculo del calendario:** 20 personas × 45 min = 15 horas. Con 2 sesiones al
-día son 10 días hábiles; con 3, siete. Deja 3 días de colchón para repetir
-sesiones fallidas.
+Para la **precisión** (parte A), 25 personas × 17 tramos = ~425 tramos, con un
+margen de ±3 puntos en la precisión global y de ±6–7 puntos por condición. Para
+el **efecto** (parte B), 25 pares base/intervención bastan para una prueba
+pareada (Wilcoxon) con efectos medianos. **No es una muestra para generalizar a
+la población** y así debe redactarse.
 
 ---
 
-## 3. Antes de la primera sesión
+## 2. Cuánto tiempo deben usar la app
+
+**Instrucción al participante:** *"Ábrela al empezar a trabajar en la
+computadora y déjala en segundo plano hasta que termines. Si te levantas, no
+hace falta pausarla. Úsala al menos 2 horas al día."*
+
+Lo que importa es el **bloque continuo**: la fatiga y el deterioro postural
+aparecen con el tiempo sostenido frente a la pantalla. Dos horas sueltas en
+ratos de 20 minutos solo registran a la persona "fresca". La meta es la
+jornada completa; el mínimo, 2 h con un bloque de al menos 1 h.
+
+**Criterios de validez** (fijados ANTES de empezar; están en
+`config/thresholds.json → study.field` y el exportador los aplica):
+
+| Criterio | Valor | Clave en la configuración |
+|---|---|---|
+| Día válido | ≥ 120 min de seguimiento **y** un bloque continuo ≥ 60 min | `valid_day_min_minutes`, `valid_day_min_block_minutes` |
+| Día que cuenta para la línea base | ≥ 60 min de seguimiento | `baseline_min_minutes` |
+| Duración de la línea base | 5 días que cuenten | `baseline_days` |
+| Participante válido para la comparación | ≥ 3 días válidos de base y ≥ 6 de intervención | `analysis_min_valid_days_baseline`, `analysis_min_valid_days_intervention` |
+| Días previstos | 15 días de uso (~3 semanas laborables) | `planned_days` |
+
+**Por qué "días de uso" y no días de calendario.** La app pasa de línea base a
+intervención cuando se completan 5 días con ≥ 60 min de uso, no a los 5 días
+de calendario: un fin de semana o un día con 10 minutos de uso dejarían la línea
+base vacía. La fase se decide al iniciar cada sesión con los días **anteriores**,
+así que un mismo día nunca mezcla fases.
+
+**Tiempo de seguimiento** = tiempo real con la cámara midiendo. Las pausas
+(cámara apagada) no cuentan. Que la persona se levante sí cuenta como
+seguimiento: eso es justamente una pausa activa, y se mide.
+
+---
+
+## 3. Antes de empezar con los 25
 
 | # | Qué | Cómo |
 |---|---|---|
-| 1 | Calibrar el FOV de la cámara (una vez por cámara) | `python src/tools/calibrar_fov.py --estimada <lectura de la app> --real <cinta>` y copiar el valor a `camera.horizontal_fov_deg` |
-| 2 | **Piloto con 3 personas** (no cuentan en el estudio) | Sirve para comprobar el guion y fijar el umbral de Δθc (paso 3) |
-| 3 | Fijar el umbral de desviación cervical | Con el piloto, mirar `delta_theta_media` de `cabeza_adelantada` en `segmentos.csv`. Si queda **por debajo de 15°**, el sistema no la detectaría: bajar `postural.cervical_deviation_max_deg` |
-| 4 | **Congelar la versión** | Commit y etiqueta de git antes de empezar (`git tag estudio-v1`). No cambies umbrales a mitad: invalida la comparación entre participantes |
-| 5 | Base limpia | Archivar `data/history.db` del piloto y empezar con una nueva |
-| 6 | Revisar la configuración | `study.enabled: true`. Mantén `alert_cooldown_sec` en su valor y respeta el orden del guion (§4) |
-
-El paso 3 es el más importante: el umbral de 15° es **provisional** y nunca se
-ha validado con adelantamientos reales. Si el piloto muestra que se queda
-corto, el estudio entero mediría un umbral equivocado.
+| 1 | **Medir el umbral de cabeza adelantada (D.3).** Es lo más importante | Con 2–3 personas: Calibrar, Iniciar en modo laboratorio, y alternar `correcta` con `cabeza_adelantada` leve (≈ 5 cm) y marcada (≈ 10–12 cm). Mirar `delta_theta_media` en `segmentos.csv`. Si un adelantamiento claro da menos de 15°, el sistema no lo detecta: bajar `postural.cervical_deviation_max_deg` |
+| 2 | **Decidir el enfriamiento entre alertas** | Hoy son 30 s: con una postura mala sostenida, 2 avisos por minuto durante 10 días es la receta del abandono. Recomendado para campo: **120–300 s**. Afecta al número de alertas, por eso el resultado principal del estudio es la **exposición** (% del tiempo desviado), no el número de alertas |
+| 3 | **Piloto de campo: 3 personas, 3–5 días** (no cuentan en el estudio) | Pedir el `.zip` **al tercer día**. Detecta los problemas reales (cámara ocupada por Teams o Zoom, días sin datos, avisos molestos) cuando aún hay tiempo de corregirlos |
+| 4 | **Congelar la versión** | Subir `APP_VERSION` en `src/version.py`, commit y `git tag estudio-v1`. A partir de aquí **no se cambia nada**. Cada sesión guarda la versión y la huella de `thresholds.json` (`config_hash`): el exportador avisa si algún equipo usó otra |
+| 5 | **Instalador** | Los participantes no tienen Python. Hay que empaquetar la app (`.exe`) y probarla en una PC limpia (ver §10) |
+| 6 | Instrumentos | Elegir el cuestionario de molestias (Nórdico o NDI) y preparar el SUS (usabilidad) y el consentimiento |
 
 ---
 
-## 4. Guion del bloque guiado (15 min)
+## 4. Día 0: instalación y validación (parte A, ~40 min)
 
-Cada tramo dura **~40 s**. El evaluador cambia el selector «Condición del
-protocolo» de la app **al empezar el tramo** (con un ratón externo, para que el
-participante no tenga que moverse). Los primeros ~3 s de cada tramo son de
-transición y no cuentan de forma especial: por eso los tramos son largos.
+| Min | Qué se hace |
+|---|---|
+| 0–5 | Consentimiento, asignación del **código** (P01…), cuestionario de entrada (molestias). Si hay especialista: **foto lateral para el ángulo craneovertebral (CVA)** |
+| 5–10 | Instalar la app. Botón **⚙ Estudio**: código, modo **Laboratorio** y **FOV** (sentar a la persona a una distancia medida con cinta, p. ej. 0.60 m, escribirla y pulsar *Calcular*; luego *Guardar*) |
+| 10–13 | Colocación (cámara a la altura de los ojos, 0.50–0.70 m) y **Calibrar** → **Iniciar** |
+| 13–28 | **Bloque guiado**: 17 tramos etiquetados con el selector de condición (ver §5) |
+| 28–33 | Botón **⚙ Estudio** → modo **Campo** → Guardar. Desde aquí la app está en línea base |
+| 33–40 | Explicar al participante qué hacer (§6) y entregarle la hoja de instrucciones |
 
-| Condición | Qué hace el participante durante el tramo | Tramos |
+---
+
+## 5. Guion del bloque guiado
+
+Cada tramo dura **~40 s**. El investigador cambia el selector «Condición del
+protocolo» **al empezar el tramo**.
+
+| Condición | Qué hace el participante | Tramos |
 |---|---|---|
 | `correcta` | Sentado recto y relajado, trabajando con normalidad | 4 |
 | `cabeza_adelantada` | Adelanta claramente la cabeza (≈ 10–12 cm) y la mantiene | 4 |
 | `hombros_desnivelados` | Inclina la línea de hombros (≥ 10°) y la mantiene | 3 |
 | `ojos_cerrados` | Cierra los ojos 4–5 s, abre 2 s, y repite | 3 |
-| `bostezo` | Abre la boca como en un bostezo y la mantiene ~4 s; repite | 3 |
+| `bostezo` | Abre la boca como en un bostezo ~4 s y repite | 3 |
 
-**Reglas del orden** (para que el enfriamiento de 30 s entre alertas del mismo
-tipo no falsee el resultado):
-
-1. Nunca dos tramos **del mismo tipo seguidos**.
-2. Alterna `correcta` entre los tramos con alerta esperada.
-3. Aleatoriza el orden entre participantes (p. ej. con una lista preparada),
-   para que el cansancio o el aprendizaje no se confundan con una condición.
-
-Orden de ejemplo (rota la lista entre participantes):
+**Reglas del orden** (por el enfriamiento entre alertas del mismo tipo):
+nunca dos tramos del mismo tipo seguidos, alternar `correcta` entre los tramos
+con alerta y rotar el orden entre participantes. Ejemplo:
 `correcta, adelantada, ojos, correcta, hombros, bostezo, adelantada, correcta,
 ojos, bostezo, hombros, adelantada, correcta, ojos, bostezo, hombros,
 adelantada`.
 
-Un bostezo simulado **no es un bostezo real**. Decláralo como limitación: el
-umbral de apertura bucal (0.45) sigue sin base clínica y esta prueba solo
-mide si el sistema detecta una boca abierta sostenida.
+> Si en el paso 2 de §3 se sube el enfriamiento a 120–300 s, **en la
+> validación** deja separados por al menos ese tiempo los tramos con la misma
+> alerta, o haz la validación con el valor de 30 s y decláralo.
 
-Tras el bloque guiado, el evaluador cambia el selector a **`libre`** y el
-participante trabaja 15 minutos sin guion.
-
----
-
-## 5. Qué hace el evaluador en la app
-
-1. Abrir la app. Aparece el campo **Código de participante**.
-2. Escribir el código (`P01`). Nunca el nombre.
-3. **Calibrar** (la persona recta, quieta, mirando la pantalla).
-4. **Iniciar seguimiento.** Sin código, el botón no se habilita.
-5. Durante el seguimiento, el selector de **Condición** estampa cada fila y
-   cada alerta con lo que la persona está haciendo.
-6. Al terminar: **Recalibrar** (cierra la sesión) y pasar al siguiente
-   participante, o cerrar la app con **Salir** en la bandeja.
-
-**Una sesión = un participante.** No reutilices una sesión para dos personas.
+Bostezos y cierres de ojos son **simulados**: decláralo como limitación.
 
 ---
 
-## 6. Obtener los resultados
+## 6. Qué hace el participante (días 1–15)
+
+**Cada día:**
+
+1. Abrir la app al empezar a trabajar.
+2. **Calibrar** (sentado recto, mirando la pantalla, ~20 s) e **Iniciar
+   seguimiento**. Se calibra cada día porque la silla, la luz y la posición de la
+   cámara cambian.
+3. Cerrar la ventana: la app sigue en segundo plano (icono junto al reloj).
+   **Pausar** si hay una videollamada que necesite la cámara o si no quiere ser
+   medido en ese momento.
+4. Al terminar la jornada: **Salir** desde el icono de la bandeja. La app
+   pregunta **tres cosas en 10 segundos**: dolor de cuello u hombros, cansancio
+   visual y somnolencia (0–10). Si se apagó el equipo sin salir, la pregunta
+   aparece al abrir la app al día siguiente, marcada como retrospectiva.
+
+**Durante los primeros días (línea base) la app no avisa.** Es intencionado y
+el participante lo sabe: la barra muestra *"Línea base: la app mide pero no
+avisa"*. A partir del día 6 de uso aparecen los avisos.
+
+**Envío de datos:** botón **Exportar mis datos**. Guarda en el Escritorio un
+`Estudio_P07_<fecha>.zip` y lo selecciona en el Explorador. Se envía:
+
+- **el día 7** (envío intermedio, para detectar problemas a tiempo), y
+- **al terminar** (envío final).
+
+Por correo, si pesa menos de 25 MB, o a una carpeta compartida de Drive por
+participante. El `.zip` no contiene imágenes ni el nombre.
+
+---
+
+## 7. Obtener los resultados
+
+Guarda todos los `.zip` recibidos en una carpeta (por ejemplo `recibidos/`) y
+ejecuta:
 
 ```bash
-python src/tools/export_study.py
+python src/tools/export_study.py --db recibidos/ --output-dir resultados/campo
 ```
 
-Sin argumentos lee `data/history.db` y crea `data/estudio_<fecha>/` con:
+Lee todos los `.zip` y `.db` de la carpeta. Si un participante envió el
+intermedio y el final, **las sesiones repetidas se cuentan una sola vez**: cada
+sesión tiene un identificador único.
 
 | Archivo | Contenido | Para qué |
 |---|---|---|
-| `resumen_sesiones.csv` | Una fila por participante | Estadística descriptiva y comparación entre personas |
-| `segmentos.csv` | Una fila por tramo: condición, alerta esperada y obtenida, latencia | Matriz de confusión; es la «tabla de resultados» del Capítulo IV |
-| `matriz_confusion.csv` | VP/FN/FP/VN y precisión por condición y global, con IC 95 % | §4.2 del reporte |
-| `eventos.csv` | Cada alerta, su condición y los segundos hasta corregir | Indicadores de prevención del Capítulo I |
-| `metricas_detalle.csv` | Todas las métricas fila a fila | Gráficos de evolución |
+| `matriz_confusion.csv` | VP/FN/FP/VN, sensibilidad, especificidad y precisión con IC 95 % | Parte A: **precisión ≥ 90 %** del Capítulo I |
+| `segmentos.csv` | Cada tramo del bloque guiado con su resultado y latencia | Parte A: tabla de resultados |
+| `resumen_participantes.csv` | Una fila por participante: días válidos, adherencia, y **media de cada indicador en línea base e intervención con su diferencia** | Parte B: **la tabla para la prueba pareada** |
+| `resumen_diario.csv` | Una fila por participante y día, con todos los indicadores (ver abajo) | Evolución, gráficos, análisis de días |
+| `perfil_horario.csv` | Indicadores por hora del día y fase | A qué hora empieza el deterioro |
+| `reportes/reporte_P07.html` | **Reporte por participante para el especialista**: comparación, gráficas por día, exposición por bandas, perfil horario, tabla diaria y cómo leerlo. Se abre en el navegador y se imprime a PDF | Revisión clínica |
+| `eventos.csv` | Cada alerta: fase, si se **mostró** o se registró en silencio, y segundos hasta corregir | Detalle |
+| `detalle/metricas_P07.csv` | Todas las mediciones de campo, una por segundo, por participante | Análisis propio en R, Python o SPSS |
+| `resumen_sesiones.csv`, `metricas_detalle.csv` | Por sesión, y el detalle de las sesiones de laboratorio | Parte A |
 
-Los archivos usan UTF-8 con BOM: se abren en Excel sin romper tildes ni la θ, y
-se leen en SPSS, R o Python sin más.
+**Indicadores por día** (`resumen_diario.csv`):
 
-Si los participantes usaron equipos distintos, une las bases:
-
-```bash
-python src/tools/export_study.py --db equipo1/history.db equipo2/history.db
-```
-
-**Cómo se puntúa un tramo.** Con alerta esperada (p. ej. `cabeza_adelantada` →
-`cervical_angle`): **VP** si el sistema la emitió dentro del tramo, **FN** si no.
-Sin alerta esperada (`correcta`): **VN** si no hubo ninguna, **FP** si hubo
-alguna. Una alerta cuenta hasta 5 s después del fin del tramo (por el filtro y
-el temporizador). Los tramos de menos de 15 s no se puntúan.
-
-**Indicadores que salen del estudio y se corresponden con el Capítulo I:**
-
-| Indicador de la tesis | Dónde está |
+| Grupo | Indicadores |
 |---|---|
-| Precisión de clasificación (≥ 90 %) | `matriz_confusion.csv`, fila `GLOBAL` |
-| Tiempo de exposición tras la notificación | `segundos_hasta_corregir` (`eventos.csv`) y `correccion_mediana_s` |
-| Restablecimiento de la postura tras la alerta | `alertas_cervicales_corregidas / alertas_cervicales_total` |
-| FPS, latencia, consumo | `benchmark_mediapipe.py` (no sale de este exportador) |
-| **Adherencia a las pausas** | **No se puede medir todavía**: el sistema registra alertas emitidas, no si el usuario las atendió. El tiempo hasta corregir es el mejor sustituto disponible |
+| Exposición cervical | minutos y % del tiempo en cada banda de Δθc (< 10°, 10–20°, 20–30°, ≥ 30°), % del tiempo por encima del umbral, Δθc medio y p95, episodio más largo, episodios sostenidos por hora |
+| Hombros y cabeza | % del tiempo con asimetría > 10°, hombro habitualmente más bajo, inclinación lateral mediana |
+| Pantalla | distancia mediana, % del tiempo demasiado cerca |
+| Fatiga | PERCLOS medio y p95, minutos con PERCLOS alto, bostezos |
+| Pausas activas | número de pausas (≥ 60 s fuera de cámara), minutos en pausa, **tramo más largo sentado sin pausa** |
+| Respuesta | segundos hasta corregir tras un episodio cervical (con aviso en la intervención, espontáneo en la base), % corregidos en 30 s |
+| Deterioro | Δθc, % desviado y PERCLOS en la primera frente a la última hora (días ≥ 2 h) |
+| Alertas | detectadas, mostradas, por hora y por tipo |
+| Autorreporte | dolor de cuello, cansancio visual, somnolencia (0–10) |
+| Validez | minutos de seguimiento, bloque continuo más largo, día válido sí/no |
 
 ---
 
-## 7. Análisis sugerido
+## 8. Análisis sugerido
 
-1. **Principal:** precisión global y por condición con su IC 95 %, más la
-   latencia mediana. Reporta también el rango de la precisión **por
-   participante**.
-2. **Uso libre:** `alertas_por_hora`, `pct_desviado_uso_libre` y
-   `correccion_mediana_s`. Compara `alertas_1a_mitad` con `alertas_2a_mitad`
-   con una prueba pareada (Wilcoxon) para ver si hay evolución dentro de la
-   sesión.
-3. **Percepción:** la valoración 1–5 de los avisos (¿molestos?, ¿oportunos?).
-   Es lo que justifica el régimen de notificaciones frente al modal del
-   Capítulo III.
-4. **Opcional:** el Índice de Discapacidad Cervical (NDI) que recomendó el
-   experto solo tiene sentido en un seguimiento de semanas. Con una sola
-   sesión no lo apliques.
-
----
-
-## 8. Ética y datos personales
-
-- **Consentimiento informado** por escrito, con derecho a retirarse.
-- **Códigos seudónimos** (P01…). La tabla código→persona, si existe, va en un
-  archivo **aparte** y fuera del repositorio.
-- **No se guarda imagen ni video**: la bitácora solo contiene números.
-- Los datos del estudio (`data/estudio_*/`, `data/*.db`) están excluidos de git.
-  No los subas a GitHub: son datos de personas.
-- Informa a cada participante de que el sistema no es un dispositivo de
-  diagnóstico y de que los avisos son orientativos.
+1. **Precisión (parte A):** global y por condición con IC 95 %, latencia
+   mediana, y el rango por participante.
+2. **Efecto (parte B), resultado principal:** `pct_desviado` en línea base
+   frente a intervención, con **Wilcoxon de rangos con signo** sobre los
+   participantes válidos (`resumen_participantes.csv`, columnas `_base` e
+   `_interv`). Reportar la mediana del cambio y el tamaño del efecto.
+3. **Secundarios:** episodio más largo, tramo sin pausa, pausas por hora,
+   PERCLOS, segundos hasta corregir y autorreporte, con la misma prueba.
+   Varias pruebas a la vez: corregir por comparaciones múltiples (Holm) o
+   declararlas exploratorias.
+4. **Antes / después con instrumentos externos:** cuestionario de molestias
+   (Nórdico o NDI) y, si el especialista lo hace, el CVA con foto lateral.
+5. **Usabilidad:** SUS al cierre, y la adherencia (`adherencia_pct`).
 
 ---
 
-## 9. Limitaciones a declarar en la tesis
+## 9. Ética y datos personales
 
-- Muestra de 20–25 personas: validación técnica, no generalizable.
-- Los tramos de una persona no son independientes; el IC es optimista.
-- Bostezos y cierres de ojos son **simulados** por el participante.
-- La distancia es una estimación (±8 % por el ancho de hombros) y el FOV se
-  calibró con una persona.
-- Umbrales provisionales (15° de desviación, ratio 0.65 del EAR, MAR 0.45) sin
-  validación clínica; el umbral de desviación se ajustó con un piloto de 3
-  personas.
-- Un solo experto (N = 1) para los criterios clínicos.
-- La adherencia a las pausas no se mide: solo el tiempo hasta corregir.
+- **Consentimiento informado** por escrito, que explique que hay una fase sin
+  avisos, que se puede pausar en cualquier momento y que se puede retirar.
+- **Códigos seudónimos** (P01…). La tabla código → persona va en un archivo
+  aparte, fuera del repositorio y fuera de los equipos de los participantes.
+- **No se guarda ninguna imagen ni video.** El `.zip` lo explica en `LEEME.txt`.
+- Los datos recibidos no se suben a GitHub (`data/estudio_*/`, `resultados/` y
+  `data/*.db` están en `.gitignore`).
+- El sistema **no diagnostica**: aporta datos de exposición y conducta que
+  complementan la evaluación del especialista. Así debe constar en el
+  consentimiento y en la tesis.
+
+---
+
+## 10. Qué falta probar antes de entregar la app
+
+Ordenado por prioridad. Las casillas son para ir marcando.
+
+### Bloqueantes (sin esto no se puede empezar)
+
+- [ ] **Umbral de cabeza adelantada (D.3)**, §3 paso 1.
+- [ ] **Instalador `.exe`** probado en una PC **sin Python**: abre, detecta la
+  cámara, guarda en `data/`, muestra notificaciones y exporta el `.zip`.
+- [ ] **Jornada de 8 h seguidas** en segundo plano. Anotar al inicio y al final
+  la memoria del proceso (Administrador de tareas) y el tamaño de
+  `data/history.db` (esperado: ~0.5 MB por hora). Ni cierres ni memoria que crezca
+  sin parar.
+- [ ] **Cámara ocupada:** con la app monitoreando, abrir Teams, Zoom o Meet con
+  vídeo. ¿Qué pasa con la app? ¿Y al cerrar la videollamada?
+- [ ] **Suspender e hibernar** el portátil con la app monitoreando, y volver.
+
+### Importantes
+
+- [ ] **Línea base de verdad silenciosa:** en modo Campo con un código nuevo,
+  forzar una mala postura. No debe aparecer ningún aviso, pero `eventos.csv`
+  debe tener la alerta con `mostrada = no`.
+- [ ] **Paso a intervención:** con el código de prueba, usar la app 5 días ≥ 60
+  min (o bajar `baseline_days` a 1 para la prueba) y comprobar que al día
+  siguiente aparecen los avisos y la barra dice *"Avisos activos"*.
+- [ ] **Encuesta:** sale al pulsar Salir tras ≥ 30 min de uso; no vuelve a
+  salir el mismo día; si se apaga el equipo sin salir, aparece al abrir al día
+  siguiente.
+- [ ] **Exportar mis datos** con la app monitoreando: el `.zip` aparece en el
+  Escritorio (también con OneDrive) y `export_study.py` lo lee.
+- [ ] **Notificaciones** en un equipo ajeno: con "No molestar" activado no se
+  ven; hay que pedir al participante que permita las de la app.
+- [ ] **Luz baja y lentes:** calibrar y trabajar 10 min de noche y con lentes;
+  revisar que el PERCLOS no se dispare con los ojos abiertos.
+- [ ] **Cámara externa sobre otro monitor** (no centrada): la postura de
+  referencia debería compensarlo; comprobarlo.
+- [ ] **Equipo lento:** si da menos de 10 FPS, probar
+  `pose_every_n_frames = 2` y medir otra vez.
+
+### Del ciclo de datos
+
+- [ ] Juntar los `.zip` del piloto (intermedio y final) y ejecutar el
+  exportador: sin sesiones duplicadas, reportes HTML legibles y CSV que abren
+  en Excel.
+- [ ] Revisar un `reporte_P0X.html` con el especialista **antes** del estudio:
+  ¿le sirve?, ¿falta algo?
+
+---
+
+## 11. Calendario: aviso importante
+
+La Fase 8 del cronograma termina el **15 de noviembre de 2026**. Con este
+diseño: piloto (1 semana) + instalaciones escalonadas (1–2 semanas) + 15 días de
+uso (3 semanas laborables) + análisis (1 semana) ≈ **6–7 semanas**. **No cabe
+antes del 15 de noviembre**: hay que mover la Fase 8 en el cronograma o
+reducir la parte B (p. ej. 10 días de uso: 3 de base y 7 de intervención,
+ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
+
+---
+
+## 12. Limitaciones a declarar en la tesis
+
+- Muestra de 25 personas: no generalizable a la población.
+- Precisión medida con condiciones **simuladas** (parte A); en casa no hay
+  verdad de terreno.
+- Δθc es una desviación **relativa** a la postura neutra de cada día, no el
+  ángulo craneovertebral clínico.
+- Diseño A-B sin grupo control: un cambio entre fases también puede deberse a
+  la novedad o a saberse observado (efecto Hawthorne). La línea base lo
+  atenúa, no lo elimina.
+- En la línea base la ventana de la app muestra las métricas en vivo: quien la
+  mira recibe algo de retroalimentación. Por eso se pide trabajar con la
+  ventana cerrada.
+- El número de alertas depende del enfriamiento configurado; por eso el
+  resultado principal es la exposición.
+- La distancia es una estimación (±8 % por el ancho de hombros).
+- Umbrales provisionales (Δθc, ratio 0.65 del EAR, MAR 0.45) sin validación
+  clínica; un solo experto (N = 1) para los criterios clínicos.

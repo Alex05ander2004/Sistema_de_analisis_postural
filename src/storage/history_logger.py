@@ -9,9 +9,18 @@ por el FSM, incluyendo: timestamp, tipo de evento, métricas y duración.
 La base de datos se crea automáticamente si no existe.
 
 Tablas:
-  - sessions  → una fila por sesión de uso
-  - events    → un registro por alerta (FK → sessions)
-  - metrics   → snapshots de métricas por frame (opcional, para análisis)
+  - sessions      → una fila por sesión de uso
+  - events        → un registro por alerta (FK → sessions)
+  - metrics_log   → snapshots de métricas (uno por segundo, para análisis)
+  - self_reports  → autorreporte diario del participante (dolor de cuello,
+                    cansancio visual, somnolencia; escala 0–10)
+
+Concurrencia
+------------
+La conexión la usan el hilo de inferencia (métricas y alertas) y el de la
+interfaz (autorreporte, copia de seguridad para exportar). Todas las
+operaciones pasan por un RLock: sqlite3 con check_same_thread=False permite
+compartir la conexión, pero NO la serializa.
 
 Autor: Generado según PLAN.md — Tesis Huisa Perez, UNSA 2026
 """
@@ -20,12 +29,13 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +80,25 @@ CREATE TABLE IF NOT EXISTS metrics_log (
     pose_valid          INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS self_reports (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    participant_code TEXT,
+    report_date      TEXT NOT NULL,
+    created_at       REAL NOT NULL,
+    neck_pain        INTEGER,
+    eye_strain       INTEGER,
+    sleepiness       INTEGER,
+    retrospective    INTEGER NOT NULL DEFAULT 0,
+    skipped          INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_session    ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_session   ON metrics_log(session_id);
 """
+
+# Fases de campo (sessions.study_phase); ver src/study/field_study.py.
+FIELD_PHASES = ("linea_base", "intervencion")
 
 
 class HistoryLogger:
@@ -101,6 +126,7 @@ class HistoryLogger:
 
         self._conn: Optional[sqlite3.Connection] = None
         self._session_id: Optional[str] = None
+        self._lock = threading.RLock()
 
         self._open()
         logger.info("HistoryLogger inicializado → %s", self._db_path.resolve())
@@ -166,10 +192,15 @@ class HistoryLogger:
         # cada sesión ni analizar la evolución de una misma persona.
         ses = {row["name"] for row in
                self._conn.execute("PRAGMA table_info(sessions)")}
-        if "participant_code" not in ses:
-            self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN participant_code TEXT")
-            logger.info("sessions: columna 'participant_code' añadida.")
+        # app_version y config_hash: trazabilidad (todos los participantes
+        # deben haber usado la misma versión y los mismos umbrales).
+        # study_phase: validacion / linea_base / intervencion.
+        for col in ("participant_code", "app_version", "config_hash",
+                    "study_phase"):
+            if col not in ses:
+                self._conn.execute(
+                    f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
+                logger.info("sessions: columna '%s' añadida.", col)
 
         ev = {row["name"] for row in
               self._conn.execute("PRAGMA table_info(events)")}
@@ -177,25 +208,36 @@ class HistoryLogger:
             self._conn.execute(
                 "ALTER TABLE events ADD COLUMN condition_label TEXT")
             logger.info("events: columna 'condition_label' añadida.")
+        # notified: 1 si la alerta se mostró al usuario, 0 si se registró en
+        # silencio (línea base del estudio de campo). NULL en bases antiguas,
+        # donde todas se mostraban.
+        if "notified" not in ev:
+            self._conn.execute(
+                "ALTER TABLE events ADD COLUMN notified INTEGER")
+            logger.info("events: columna 'notified' añadida.")
 
     @contextmanager
     def _cursor(self):
-        """Context manager que hace commit automático."""
-        cursor = self._conn.cursor()
-        try:
-            yield cursor
-            self._conn.commit()
-        except Exception as exc:
-            self._conn.rollback()
-            logger.error("HistoryLogger DB error: %s", exc)
-            raise
+        """Context manager que hace commit automático (bajo el cerrojo)."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            try:
+                yield cursor
+                self._conn.commit()
+            except Exception as exc:
+                self._conn.rollback()
+                logger.error("HistoryLogger DB error: %s", exc)
+                raise
 
     # ------------------------------------------------------------------
     # Gestión de sesiones
     # ------------------------------------------------------------------
 
     def start_session(self, notes: str = "",
-                      participant_code: str = "") -> str:
+                      participant_code: str = "",
+                      study_phase: str = "",
+                      app_version: str = "",
+                      config_hash: str = "") -> str:
         """
         Inicia una nueva sesión de monitoreo.
 
@@ -205,6 +247,10 @@ class HistoryLogger:
             Texto libre; la app guarda aquí un resumen de la calibración.
         participant_code:
             Código seudonimizado del participante ("" si no es un estudio).
+        study_phase:
+            validacion / linea_base / intervencion ("" fuera de un estudio).
+        app_version, config_hash:
+            Versión de la app y huella de config/thresholds.json.
 
         Returns
         -------
@@ -216,9 +262,12 @@ class HistoryLogger:
 
         with self._cursor() as cur:
             cur.execute(
-                "INSERT INTO sessions (id, started_at, notes, participant_code)"
-                " VALUES (?, ?, ?, ?)",
-                (session_id, time.time(), notes, participant_code or None),
+                "INSERT INTO sessions (id, started_at, notes, participant_code,"
+                " study_phase, app_version, config_hash)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, time.time(), notes, participant_code or None,
+                 study_phase or None, app_version or None,
+                 config_hash or None),
             )
 
         logger.info("Sesión iniciada: %s", session_id)
@@ -241,7 +290,8 @@ class HistoryLogger:
     # Registro de alertas
     # ------------------------------------------------------------------
 
-    def log_event(self, alert_event, condition: str = "") -> None:
+    def log_event(self, alert_event, condition: str = "",
+                  notified: bool = True) -> None:
         """
         Registra un AlertEvent del FSM en la tabla events.
 
@@ -251,6 +301,8 @@ class HistoryLogger:
             Instancia de fusion_fsm.AlertEvent.
         condition:
             Condición del protocolo de estudio en el momento de la alerta.
+        notified:
+            False si la alerta se detectó pero NO se mostró (línea base).
         """
         if not self._session_id:
             logger.warning("log_event: no hay sesión activa, iniciando una automáticamente.")
@@ -260,8 +312,9 @@ class HistoryLogger:
             cur.execute(
                 """INSERT INTO events
                    (session_id, timestamp, alert_type, metric_value,
-                    threshold, duration_sec, message, condition_label)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    threshold, duration_sec, message, condition_label,
+                    notified)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     self._session_id,
                     alert_event.timestamp,
@@ -271,6 +324,7 @@ class HistoryLogger:
                     alert_event.duration_sec,
                     alert_event.message,
                     condition or None,
+                    int(bool(notified)),
                 ),
             )
 
@@ -460,13 +514,90 @@ class HistoryLogger:
         logger.info("Reporte exportado: %s", output_path)
         return output_path
 
+    # ------------------------------------------------------------------
+    # Estudio de campo
+    # ------------------------------------------------------------------
+
+    def field_minutes_by_date(self, participant_code: str,
+                              phases=FIELD_PHASES,
+                              max_gap_sec: float = 5.0) -> Dict[str, float]:
+        """
+        Minutos de seguimiento REAL por día (fecha local) de un participante.
+
+        Se suman los intervalos entre filas consecutivas de metrics_log de
+        hasta `max_gap_sec`: un hueco mayor es una pausa (cámara apagada) y no
+        cuenta como uso. Por eso no se usa started_at/ended_at, que incluye
+        las pausas y, en sesiones sin cerrar, ni siquiera tiene fin.
+        """
+        if not participant_code:
+            return {}
+        marks = ",".join("?" for _ in phases)
+        sql = f"""
+            SELECT d, SUM(dt) FROM (
+                SELECT date(m.timestamp, 'unixepoch', 'localtime') AS d,
+                       m.timestamp - LAG(m.timestamp) OVER (
+                           PARTITION BY m.session_id ORDER BY m.timestamp) AS dt
+                FROM metrics_log m JOIN sessions s ON s.id = m.session_id
+                WHERE s.participant_code = ? AND s.study_phase IN ({marks})
+            ) WHERE dt > 0 AND dt <= ? GROUP BY d ORDER BY d"""
+        with self._lock:
+            rows = self._conn.execute(
+                sql, (participant_code, *phases, max_gap_sec)).fetchall()
+        return {r[0]: (r[1] or 0.0) / 60.0 for r in rows}
+
+    def log_self_report(self, participant_code: str, report_date: str,
+                        neck_pain: Optional[int], eye_strain: Optional[int],
+                        sleepiness: Optional[int], retrospective: bool = False,
+                        skipped: bool = False) -> None:
+        """Guarda el autorreporte de un día (o que el participante lo omitió)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO self_reports
+                   (participant_code, report_date, created_at, neck_pain,
+                    eye_strain, sleepiness, retrospective, skipped)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (participant_code or None, report_date, time.time(),
+                 neck_pain, eye_strain, sleepiness,
+                 int(bool(retrospective)), int(bool(skipped))),
+            )
+
+    def self_report_dates(self, participant_code: str) -> set:
+        """Fechas con autorreporte (respondido u omitido) del participante."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT report_date FROM self_reports "
+                "WHERE participant_code IS ?", (participant_code or None,)
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def backup_to(self, dest_path) -> Path:
+        """
+        Copia consistente de la base aunque la app esté escribiendo.
+
+        Copiar el archivo .db a mano con WAL activo puede dejar fuera las
+        últimas escrituras (siguen en el -wal); la API de backup de SQLite
+        produce una base completa y autónoma.
+        """
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest.unlink()
+        with self._lock:
+            dst = sqlite3.connect(str(dest))
+            try:
+                self._conn.backup(dst)
+            finally:
+                dst.close()
+        return dest
+
     def close(self) -> None:
         """Cierra la conexión a la base de datos."""
-        if self._session_id:
-            self.end_session()
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._session_id:
+                self.end_session()
+            if self._conn:
+                self._conn.close()
+                self._conn = None
         logger.info("HistoryLogger cerrado.")
 
     def __enter__(self):

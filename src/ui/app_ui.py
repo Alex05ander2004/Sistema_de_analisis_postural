@@ -76,6 +76,13 @@ from src.fusion.guided_calibration import (
     DONE as CALIB_DONE, FAILED as CALIB_FAILED, GuidedCalibration,
 )
 from src.storage.history_logger import HistoryLogger
+from src.study.field_study import (
+    MODE_FIELD, MODE_LAB, PHASE_BASELINE, PHASE_VALIDATION, LocalProfile,
+    decide_phase, normalize_code, pending_report_date, today_iso,
+)
+from src.study.data_bundle import create_bundle
+from src.tools.calibrar_fov import corrected_hfov
+from src.version import APP_VERSION, config_hash
 from src.ui.video_feed import VideoFeed
 from src.ui.telemetry_panel import TelemetryPanel
 from src.ui.alert_notifier import AlertNotifier
@@ -95,6 +102,9 @@ logging.basicConfig(
 logger = logging.getLogger("app_ui")
 
 _THRESHOLDS_PATH = PROJECT_ROOT / "config" / "thresholds.json"
+# Perfil propio de ESTE equipo (código, modo del estudio, FOV de su cámara).
+# Va aparte para que thresholds.json sea idéntico en todos los equipos.
+_PROFILE_PATH = PROJECT_ROOT / "data" / "estudio_local.json"
 
 
 def _load_thresholds() -> dict:
@@ -183,12 +193,22 @@ class InferenceThread(threading.Thread):
                  on_alert,
                  video_feed: VideoFeed,
                  log_metrics_every_n: int = 30,
-                 start_mode: str = "monitoring"):
+                 start_mode: str = "monitoring",
+                 profile: LocalProfile | None = None,
+                 log_metrics_interval_sec: float | None = None):
         """
         start_mode:
             "monitoring" empieza a vigilar de inmediato (comportamiento
             anterior; lo usan las pruebas y las herramientas). La app arranca
             en "preview" y el usuario calibra e inicia desde la interfaz.
+        profile:
+            Perfil local del equipo (data/estudio_local.json): código del
+            participante, modo del estudio (laboratorio / campo) y FOV de su
+            cámara. None = modo laboratorio sin código.
+        log_metrics_interval_sec:
+            Cadencia de metrics_log en SEGUNDOS. None = la de
+            storage.metrics_interval_sec; si tampoco está, se registra cada
+            `log_metrics_every_n` frames (comportamiento anterior).
         """
         super().__init__(name="InferenceThread", daemon=True)
         self._vt = video_thread
@@ -215,8 +235,33 @@ class InferenceThread(threading.Thread):
         # de str es atómica en CPython, no hacen falta cerrojos.
         study_cfg = thresholds.get("study", {})
         self._study_enabled = bool(study_cfg.get("enabled", False))
-        self._participant = ""
+        self._profile = profile or LocalProfile()
+        self._study_mode = self._profile.modo if self._study_enabled else ""
+        self._participant = self._profile.participante
         self._condition = ""
+        # Estudio de campo: fase de la sesión en curso y, en la línea base,
+        # alertas silenciadas (se registran pero no se muestran).
+        self._field_cfg = study_cfg.get("field", {})
+        self._phase = ""
+        self._day_number = 0
+        self._alerts_muted = False
+        self._config_hash = config_hash(_THRESHOLDS_PATH)
+
+        # Cadencia de la bitácora de métricas. Por TIEMPO y no por frames:
+        # con "cada 30 frames" un equipo a 10 FPS registraba una fila cada
+        # 3 s y otro a 30 FPS una por segundo, y los indicadores por tiempo
+        # (minutos de uso, % del tiempo desviado) no eran comparables entre
+        # los equipos de los participantes.
+        if log_metrics_interval_sec is None:
+            log_metrics_interval_sec = thresholds.get("storage", {}).get(
+                "metrics_interval_sec")
+        self._log_interval_sec = (float(log_metrics_interval_sec)
+                                  if log_metrics_interval_sec else None)
+        self._last_log_ts = 0.0
+        # Fecha local en que empezó la sesión de campo en curso; ver
+        # _check_day_rollover().
+        self._session_date = ""
+        self._last_day_check = 0.0
 
         ui_cfg_early = thresholds.get("ui", {})
         self._skip_render_when_hidden = bool(
@@ -227,7 +272,10 @@ class InferenceThread(threading.Thread):
         cam_cfg = thresholds.get("camera", {})
         self._frame_size = (cam_cfg.get("resolution_width", 640),
                             cam_cfg.get("resolution_height", 480))
-        self._hfov_deg = cam_cfg.get("horizontal_fov_deg", 60.0)
+        # El FOV calibrado para la cámara de ESTE equipo (perfil local)
+        # prevalece sobre el genérico de thresholds.json.
+        self._hfov_deg = (self._profile.camera_hfov_deg
+                          or cam_cfg.get("horizontal_fov_deg", 60.0))
         self._min_dist = cam_cfg.get("min_distance_m", 0.50)
         self._max_dist = cam_cfg.get("max_distance_m", 0.70)
         # Banda de tolerancia: fuera del rango recomendado la medida sigue
@@ -298,7 +346,9 @@ class InferenceThread(threading.Thread):
         )
         if start_mode == "monitoring":
             self._db.start_session(notes="Sesión automática",
-                                   participant_code=self._participant)
+                                   participant_code=self._participant,
+                                   app_version=APP_VERSION,
+                                   config_hash=self._config_hash)
 
         calib_cfg = thresholds.get("calibration", {})
         self._calibration = GuidedCalibration(
@@ -405,6 +455,41 @@ class InferenceThread(threading.Thread):
         return self._study_enabled
 
     @property
+    def study_mode(self) -> str:
+        """laboratorio / campo ("" sin estudio)."""
+        return self._study_mode
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    @property
+    def day_number(self) -> int:
+        return self._day_number
+
+    @property
+    def alerts_muted(self) -> bool:
+        return self._alerts_muted
+
+    @property
+    def history(self) -> HistoryLogger:
+        """Bitácora (thread-safe): autorreporte y exportación desde la UI."""
+        return self._db
+
+    @property
+    def hfov_deg(self) -> float:
+        return self._hfov_deg
+
+    def set_hfov(self, hfov_deg: float) -> None:
+        """FOV de la cámara; asignar un float es atómico en CPython."""
+        self._hfov_deg = float(hfov_deg)
+
+    def set_study_mode(self, mode: str) -> None:
+        """Cambia entre laboratorio y campo (surte efecto al pulsar Iniciar)."""
+        if self._study_enabled and mode in (MODE_LAB, MODE_FIELD):
+            self._study_mode = mode
+
+    @property
     def participant(self) -> str:
         return self._participant
 
@@ -418,7 +503,7 @@ class InferenceThread(threading.Thread):
         espacios) para que "p 01" y "P01" no acaben como dos participantes en
         el análisis.
         """
-        self._participant = "".join(str(code).split()).upper()
+        self._participant = normalize_code(code)
 
     def set_condition(self, condition: str) -> None:
         """Condición del protocolo vigente; se estampa en filas y alertas."""
@@ -470,15 +555,77 @@ class InferenceThread(threading.Thread):
                 if not self.can_start:
                     logger.info("Inicio ignorado: falta calibrar.")
                     continue
-                self._db.start_session(notes=self._session_notes(),
-                                       participant_code=self._participant)
-                # Al empezar, el participante está en uso libre hasta que el
-                # evaluador marque la primera condición del protocolo.
-                self._condition = "libre" if self._study_enabled else ""
+                self._open_session()
+                # Laboratorio: uso libre hasta que el evaluador marque la
+                # primera condición del protocolo. Campo: siempre uso libre.
+                self._condition = ("libre" if self._study_mode == MODE_LAB
+                                   else "")
                 self._fsm.reset_timers()
                 self._smoothers.reset()
                 self._mode = "monitoring"
                 logger.info("Modo: monitoreando.")
+
+    def _open_session(self, extra_note: str = "") -> None:
+        """Decide la fase y abre la sesión en la bitácora."""
+        self._decide_phase()
+        notes = self._session_notes() + extra_note
+        self._db.start_session(notes=notes,
+                               participant_code=self._participant,
+                               study_phase=self._phase,
+                               app_version=APP_VERSION,
+                               config_hash=self._config_hash)
+        self._session_date = today_iso()
+
+    def _check_day_rollover(self, now: float) -> None:
+        """
+        En campo, una sesión no puede abarcar dos días.
+
+        Si el participante nunca pulsa Salir (suspende el portátil por la noche
+        y sigue a la mañana siguiente), la sesión seguiría abierta con la fase
+        del primer día: la línea base no terminaría nunca, o un día de
+        intervención quedaría registrado como línea base. Al cambiar la fecha
+        se cierra la sesión y se abre otra con la fase recalculada. La
+        calibración se conserva: recalibrar es siempre una acción explícita.
+        """
+        if (self._mode != "monitoring" or self._study_mode != MODE_FIELD
+                or now - self._last_day_check < 30.0):
+            return
+        self._last_day_check = now
+        if self._session_date and today_iso() != self._session_date:
+            logger.info("Cambio de día durante el seguimiento: nueva sesión.")
+            self._db.end_session()
+            self._open_session(" (continuación tras cambio de día)")
+            self._fsm.reset_timers()
+            self._smoothers.reset()
+
+    def _decide_phase(self) -> None:
+        """
+        Fase de la sesión que empieza. En campo, línea base (alertas
+        silenciadas) hasta completar `baseline_days` días válidos ANTERIORES
+        a hoy; después, intervención. Ver src/study/field_study.py.
+        """
+        self._alerts_muted = False
+        self._day_number = 0
+        if self._study_mode == MODE_LAB:
+            self._phase = PHASE_VALIDATION
+        elif self._study_mode == MODE_FIELD:
+            try:
+                minutes = self._db.field_minutes_by_date(self._participant)
+            except Exception:
+                logger.exception("No se pudieron leer los días de uso; "
+                                 "se asume intervención.")
+                minutes = {}
+            self._phase, self._day_number, done = decide_phase(
+                minutes, today_iso(),
+                baseline_days=int(self._field_cfg.get("baseline_days", 5)),
+                min_minutes=float(self._field_cfg.get(
+                    "baseline_min_minutes", 60)))
+            self._alerts_muted = self._phase == PHASE_BASELINE
+            logger.info("Estudio de campo: día de uso %d, fase %s (%d días "
+                        "de línea base completados).", self._day_number,
+                        self._phase, done)
+        else:
+            self._phase = ""
 
     def _session_notes(self) -> str:
         """Resumen de la calibración vigente, guardado con la sesión."""
@@ -503,10 +650,16 @@ class InferenceThread(threading.Thread):
         escritura en SQLite va primero y protegida: si la UI fallara, el
         evento ya está registrado.
         """
+        muted = self._alerts_muted
         try:
-            self._db.log_event(alert_event, condition=self._condition)
+            self._db.log_event(alert_event, condition=self._condition,
+                               notified=not muted)
         except Exception:
             logger.exception("No se pudo registrar el evento en la bitácora")
+        # Línea base del estudio de campo: la alerta queda registrada (es la
+        # medida de comparación) pero el participante no la ve.
+        if muted:
+            return
         if self._on_alert_ui:
             self._on_alert_ui(alert_event)
 
@@ -519,6 +672,7 @@ class InferenceThread(threading.Thread):
                 # Órdenes de la interfaz primero: "Recalibrar" también tiene
                 # que funcionar estando en pausa (reanuda la cámara).
                 self._process_commands()
+                self._check_day_rollover(time.perf_counter())
 
                 # Pausado: la cámara está liberada, así que no hay nada que
                 # leer. Se espera sin quemar CPU y sin tocar el FSM.
@@ -598,8 +752,7 @@ class InferenceThread(threading.Thread):
                     metrics.cervical_deviation = metrics.cervical_angle - baseline
 
                 # --- Bitácora de métricas (cada N frames) ------------------
-                if (self._mode == "monitoring"
-                        and self._frame_n % self._log_metrics_every_n == 0):
+                if self._mode == "monitoring" and self._should_log(metrics):
                     try:
                         self._db.log_metrics(metrics, fps=self._fps)
                     except Exception:
@@ -666,6 +819,14 @@ class InferenceThread(threading.Thread):
             logger.info("InferenceThread detenido.")
 
     # ------------------------------------------------------------------
+
+    def _should_log(self, metrics: SensorMetrics) -> bool:
+        if self._log_interval_sec is None:
+            return self._frame_n % self._log_metrics_every_n == 0
+        if metrics.monotonic - self._last_log_ts >= self._log_interval_sec:
+            self._last_log_ts = metrics.monotonic
+            return True
+        return False
 
     def _build_metrics(self, pose_result, face_result) -> SensorMetrics:
         """Convierte los landmarks en métricas filtradas listas para el FSM."""
@@ -856,6 +1017,7 @@ def main(page: ft.Page):
     ui_cfg = thresholds.get("ui", {})
     cam_cfg = thresholds.get("camera", {})
 
+    profile = LocalProfile.load(_PROFILE_PATH)
     page.title = "Monitor Postural y Fatiga — Edge AI"
     _icon_path = PROJECT_ROOT / "assets" / "icon.ico"
     if _icon_path.exists():
@@ -948,6 +1110,7 @@ def main(page: ft.Page):
         # La app ya no empieza a vigilar al abrirse: el usuario ajusta el
         # encuadre, calibra y pulsa Iniciar. Ver InferenceThread (modos).
         start_mode="preview",
+        profile=profile,
     )
 
     _running = {"value": True}
@@ -971,9 +1134,10 @@ def main(page: ft.Page):
                 ], spacing=10),
             ),
             ft.Container(expand=True),
+            (header_actions := ft.Row([], spacing=4)),
             ft.Text("100% Local • Sin nube", size=11,
                     color=ft.colors.WHITE38, italic=True),
-        ]),
+        ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor="#0D0D1A",
         padding=ft.padding.symmetric(vertical=12, horizontal=20),
         border=ft.border.only(bottom=ft.BorderSide(1, "#1E1E3A")),
@@ -1069,11 +1233,13 @@ def main(page: ft.Page):
         on_change=_on_condition_change,
         text_size=14, width=360, border_color="#2A2A4A",
     )
+    study_title = ft.Text("Modo estudio", size=13,
+                          weight=ft.FontWeight.W_600, color=ft.colors.WHITE)
+    phase_text = ft.Text("", size=12, color=ft.colors.WHITE70)
     study_bar = ft.Container(
         content=ft.Row([
             ft.Icon(ft.icons.SCIENCE_OUTLINED, color="#00BCD4", size=18),
-            ft.Text("Modo estudio", size=13, weight=ft.FontWeight.W_600,
-                    color=ft.colors.WHITE),
+            study_title, phase_text,
             ft.Container(expand=True),
             condition_dropdown,
         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -1099,7 +1265,9 @@ def main(page: ft.Page):
         can_start = inference_thread.can_start
 
         code = inference_thread.participant
-        signature = (mode, paused, checks_ok, phase, can_start, code)
+        smode = inference_thread.study_mode
+        signature = (mode, paused, checks_ok, phase, can_start, code, smode,
+                     inference_thread.phase)
         if not force and signature == _ui["signature"]:
             return False
         _ui["signature"] = signature
@@ -1138,12 +1306,31 @@ def main(page: ft.Page):
 
         btn_start.visible = mode != "monitoring"
         btn_start.disabled = not can_start
-        btn_start.tooltip = (
-            "Introduce el código del participante para poder iniciar"
-            if (study_on and not code and mode != "monitoring")
-            else "Empieza a vigilar tu postura y fatiga")
-        participant_field.visible = study_on and mode != "monitoring"
+        if study_on and not code and mode != "monitoring":
+            btn_start.tooltip = (
+                "Introduce el código del participante para poder iniciar"
+                if smode == MODE_LAB else
+                "Falta el código: el investigador lo configura en «Estudio»")
+        else:
+            btn_start.tooltip = "Empieza a vigilar tu postura y fatiga"
+        # En campo el código viene del perfil del equipo y no se edita aquí:
+        # el participante no debe poder cambiarlo por error.
+        participant_field.visible = (study_on and smode == MODE_LAB
+                                     and mode != "monitoring")
         study_bar.visible = study_on and mode == "monitoring"
+        condition_dropdown.visible = smode == MODE_LAB
+        if smode == MODE_FIELD:
+            study_title.value = f"Estudio · {code or 'sin código'}"
+            if inference_thread.alerts_muted:
+                phase_text.value = (f"Día {inference_thread.day_number} · "
+                                    "Línea base: la app mide pero no avisa")
+            else:
+                phase_text.value = (f"Día {inference_thread.day_number} · "
+                                    "Avisos activos")
+        else:
+            study_title.value = "Modo estudio"
+            phase_text.value = ""
+        btn_study.disabled = mode in ("monitoring", "calibrating")
         # Flet mantiene un bgcolor explícito aunque el botón esté
         # deshabilitado: sin esto, "Iniciar" parecía activo sin calibrar.
         btn_start.bgcolor = "#00BCD4" if can_start else None
@@ -1161,6 +1348,259 @@ def main(page: ft.Page):
                 tray.set_paused(paused)
             tray.refresh_menu()
         return True
+
+    # ----------------------------------------------------------------
+    # Estudio de campo: configuración del equipo, exportación y encuesta
+    # ----------------------------------------------------------------
+    field_cfg = study_cfg.get("field", {})
+
+    def _snack(msg: str, color: str = "#2E7D32", ms: int = 8000):
+        page.open(ft.SnackBar(content=ft.Text(msg, color=ft.colors.WHITE),
+                              bgcolor=color, duration=ms))
+        page.update()
+
+    # --- Configuración del estudio (la usa el investigador) -------------
+    cfg_code = ft.TextField(label="Código de participante (P01, P02…)",
+                            text_size=14, width=300)
+    cfg_mode = ft.Dropdown(
+        label="Modo", width=300, text_size=14,
+        options=[ft.dropdown.Option(MODE_LAB,
+                                    "Laboratorio (protocolo guiado)"),
+                 ft.dropdown.Option(MODE_FIELD,
+                                    "Campo (uso diario en casa)")])
+    cfg_real = ft.TextField(label="Distancia real medida (m)", width=260,
+                            text_size=14, hint_text="p. ej. 0.60")
+    cfg_fov_info = ft.Text("", size=12, color=ft.colors.WHITE70)
+    cfg_error = ft.Text("", size=12, color="#FF6B6B")
+    _pending_fov = {"value": None}
+
+    def _fov_info():
+        d = _ui.get("distance")
+        est = f"{d:.2f} m" if d else "sin lectura (colócate frente a la cámara)"
+        nuevo = _pending_fov["value"]
+        extra = f"  →  nuevo FOV: {nuevo:.1f}°" if nuevo else ""
+        cfg_fov_info.value = (f"FOV actual: {inference_thread.hfov_deg:.1f}° · "
+                              f"distancia que estima la app ahora: {est}{extra}")
+
+    def _on_calc_fov(_):
+        cfg_error.value = ""
+        d = _ui.get("distance")
+        try:
+            real = float((cfg_real.value or "").replace(",", "."))
+        except ValueError:
+            real = 0.0
+        if not d:
+            cfg_error.value = "La app no está midiendo distancia ahora mismo."
+        elif not 0.3 <= real <= 1.5:
+            cfg_error.value = "Escribe la distancia medida en metros (0.30–1.50)."
+        else:
+            nuevo = corrected_hfov(inference_thread.hfov_deg, d, real,
+                                   video_width)
+            if not 50.0 <= nuevo <= 85.0:
+                cfg_error.value = (f"Sale {nuevo:.1f}°, fuera de lo normal "
+                                   "(55–78°). Repite la medición de frente, "
+                                   "midiendo del lente a los hombros.")
+            else:
+                _pending_fov["value"] = nuevo
+        _fov_info()
+        page.update()
+
+    def _on_save_study(_):
+        code = normalize_code(cfg_code.value)
+        if study_on and not code:
+            cfg_error.value = "Falta el código de participante."
+            page.update()
+            return
+        profile.participante = code
+        profile.modo = cfg_mode.value or MODE_LAB
+        if profile.modo == MODE_FIELD and not profile.inscrito:
+            profile.inscrito = today_iso()
+        if _pending_fov["value"]:
+            profile.camera_hfov_deg = round(_pending_fov["value"], 1)
+            inference_thread.set_hfov(profile.camera_hfov_deg)
+        try:
+            profile.save(_PROFILE_PATH)
+        except OSError:
+            logger.exception("No se pudo guardar el perfil local.")
+            cfg_error.value = "No se pudo guardar data/estudio_local.json."
+            page.update()
+            return
+        inference_thread.set_participant(code)
+        inference_thread.set_study_mode(profile.modo)
+        participant_field.value = code
+        page.close(study_dialog)
+        _refresh_controls(force=True)
+        _snack(f"Guardado: {code or 'sin código'} · modo {profile.modo}")
+
+    study_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configuración del estudio"),
+        content=ft.Column([
+            ft.Text("Para el investigador, al instalar la app en el equipo "
+                    "del participante.", size=12, color=ft.colors.WHITE54),
+            cfg_code, cfg_mode,
+            ft.Divider(),
+            ft.Text("Cámara de este equipo (FOV)", weight=ft.FontWeight.W_600),
+            ft.Text("Siéntate a una distancia medida con cinta métrica, del "
+                    "lente a los hombros, escríbela y pulsa Calcular.",
+                    size=12, color=ft.colors.WHITE54),
+            ft.Row([cfg_real, ft.OutlinedButton("Calcular",
+                                                on_click=_on_calc_fov)]),
+            cfg_fov_info, cfg_error,
+            ft.Text(f"Versión {APP_VERSION}", size=11,
+                    color=ft.colors.WHITE38),
+        ], tight=True, spacing=10, width=440),
+        actions=[
+            ft.TextButton("Cancelar",
+                          on_click=lambda _: page.close(study_dialog)),
+            ft.ElevatedButton("Guardar", on_click=_on_save_study),
+        ],
+    )
+
+    def _on_study_click(_):
+        cfg_code.value = inference_thread.participant
+        cfg_mode.value = inference_thread.study_mode or MODE_LAB
+        cfg_real.value = ""
+        cfg_error.value = ""
+        _pending_fov["value"] = None
+        _fov_info()
+        page.open(study_dialog)
+
+    # --- Exportar mis datos ----------------------------------------------
+    def _reveal(path: Path):
+        if sys.platform == "win32":
+            import subprocess
+            try:
+                subprocess.Popen(["explorer", "/select,", str(path)])
+            except OSError:
+                logger.debug("No se pudo abrir el Explorador.")
+
+    def _on_export_click(_):
+        btn_export.disabled = True
+        page.update()
+
+        def _work():
+            try:
+                path = create_bundle(
+                    inference_thread.history, _PROFILE_PATH,
+                    _THRESHOLDS_PATH, inference_thread.participant,
+                    APP_VERSION)
+                _snack(f"Datos guardados en el Escritorio: {path.name}. "
+                       "Envía ese archivo al investigador.", ms=12000)
+                _reveal(path)
+            except Exception:
+                logger.exception("No se pudieron exportar los datos.")
+                _snack("No se pudieron exportar los datos. Avisa al "
+                       "investigador.", color="#C62828")
+            finally:
+                btn_export.disabled = False
+                page.update()
+
+        threading.Thread(target=_work, name="export", daemon=True).start()
+
+    btn_export = ft.TextButton(
+        "Exportar mis datos", icon=ft.icons.DOWNLOAD,
+        on_click=_on_export_click, visible=study_on,
+        tooltip="Guarda un .zip en el Escritorio para enviarlo al investigador")
+    btn_study = ft.IconButton(
+        icon=ft.icons.SETTINGS_OUTLINED, icon_size=18,
+        on_click=_on_study_click, visible=study_on,
+        tooltip="Configuración del estudio (investigador)")
+    header_actions.controls = [btn_export, btn_study]
+
+    # --- Autorreporte diario ----------------------------------------------
+    _SURVEY_ITEMS = (
+        ("neck_pain", "Dolor o molestia en cuello u hombros"),
+        ("eye_strain", "Cansancio visual (ardor, sequedad, visión borrosa)"),
+        ("sleepiness", "Somnolencia mientras trabajabas"),
+    )
+    survey_enabled = bool(field_cfg.get("self_report", True))
+
+    def _survey_due_today() -> bool:
+        """Hoy hubo uso suficiente en campo y aún no hay autorreporte."""
+        if not (study_on and survey_enabled
+                and inference_thread.study_mode == MODE_FIELD
+                and inference_thread.participant):
+            return False
+        try:
+            hist = inference_thread.history
+            code = inference_thread.participant
+            minutes = hist.field_minutes_by_date(code).get(today_iso(), 0.0)
+            done = today_iso() in hist.self_report_dates(code)
+        except Exception:
+            logger.exception("No se pudo consultar el autorreporte.")
+            return False
+        return (not done and minutes >= float(
+            field_cfg.get("self_report_min_minutes", 30)))
+
+    def _open_survey(report_date: str, retrospective: bool, on_done=None):
+        selectors = {
+            key: ft.Dropdown(
+                label=label, width=440, text_size=14,
+                options=[ft.dropdown.Option(str(i)) for i in range(11)])
+            for key, label in _SURVEY_ITEMS
+        }
+        err = ft.Text("", size=12, color="#FF6B6B")
+        cuando = ("hoy" if not retrospective
+                  else f"el día {report_date} (tu último día de uso)")
+
+        def _finish(values, skipped):
+            try:
+                inference_thread.history.log_self_report(
+                    inference_thread.participant, report_date,
+                    values.get("neck_pain"), values.get("eye_strain"),
+                    values.get("sleepiness"),
+                    retrospective=retrospective, skipped=skipped)
+            except Exception:
+                logger.exception("No se pudo guardar el autorreporte.")
+            page.close(dlg)
+            page.update()
+            if on_done:
+                on_done()
+
+        def _save(_):
+            if any(sel.value is None for sel in selectors.values()):
+                err.value = "Responde las tres preguntas (o pulsa Omitir)."
+                page.update()
+                return
+            _finish({k: int(sel.value) for k, sel in selectors.items()}, False)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("¿Cómo terminaste la jornada?"),
+            content=ft.Column([
+                ft.Text(f"Responde pensando en {cuando}. "
+                        "0 = nada · 10 = lo peor que puedas imaginar.",
+                        size=12, color=ft.colors.WHITE70),
+                *selectors.values(), err,
+            ], tight=True, spacing=12, width=460),
+            actions=[ft.TextButton("Omitir",
+                                   on_click=lambda _: _finish({}, True)),
+                     ft.ElevatedButton("Guardar", on_click=_save)],
+        )
+        page.open(dlg)
+        page.update()
+
+    def _ask_pending_report():
+        """Al abrir: encuesta del último día de uso si quedó sin responder
+        (p. ej. se apagó el equipo sin pasar por «Salir»)."""
+        if not (study_on and survey_enabled
+                and inference_thread.study_mode == MODE_FIELD
+                and inference_thread.participant):
+            return
+        try:
+            hist = inference_thread.history
+            code = inference_thread.participant
+            minutes = hist.field_minutes_by_date(code)
+            min_m = float(field_cfg.get("self_report_min_minutes", 30))
+            used = [d for d, m in minutes.items() if m >= min_m]
+            pending = pending_report_date(used, hist.self_report_dates(code),
+                                          today_iso())
+        except Exception:
+            logger.exception("No se pudo consultar el autorreporte pendiente.")
+            return
+        if pending:
+            _open_survey(pending, retrospective=True)
 
     # Banda de ayuda de encuadre: aparece solo cuando hay algo que corregir.
     setup_banner_text = ft.Text("", size=12, color="#0A0A16",
@@ -1241,6 +1681,7 @@ def main(page: ft.Page):
                     if state.metrics is not None:
                         telemetry_panel.update(state.metrics, fps=state.fps,
                                                timer_status=state.timer_status)
+                        _ui["distance"] = state.metrics.distance_m
                     setup_banner.visible = bool(state.setup_hint)
                     setup_banner_text.value = state.setup_hint
                     _ui["calibration"] = state.calibration or {}
@@ -1330,12 +1771,32 @@ def main(page: ft.Page):
     def _on_tray_pause(paused: bool):
         inference_thread.set_paused(paused)
 
-    def _on_tray_quit():
+    def _do_quit():
         _shutdown()
         try:
-            page.run_thread(page.window.destroy)
+            page.window.destroy()
         except Exception:
             logger.debug("La ventana ya no estaba disponible al salir.")
+
+    def _request_quit():
+        """
+        Salir. En el estudio de campo, si hoy hubo uso y falta el
+        autorreporte, se pregunta antes de cerrar. Se llama desde el hilo de
+        la bandeja o desde el de la UI: todo se reenvía a la UI.
+        """
+        if _survey_due_today():
+            _show_window()
+            page.run_thread(lambda: _open_survey(today_iso(), False,
+                                                 on_done=_do_quit))
+        else:
+            page.run_thread(_do_quit)
+
+    def _on_tray_quit():
+        try:
+            _request_quit()
+        except Exception:
+            logger.exception("Fallo al salir; se cierra igualmente.")
+            _shutdown()
 
     def _on_tray_recalibrate():
         # La calibración guiada necesita que el usuario vea las instrucciones
@@ -1385,8 +1846,7 @@ def main(page: ft.Page):
                     "El sistema sigue vigilando tu postura en segundo plano. "
                     "Usa 'Salir' en la bandeja para terminar.")
             else:
-                _shutdown()
-                page.window.destroy()
+                _request_quit()
 
     page.window.prevent_close = True
     page.window.on_event = _on_window_event
@@ -1397,6 +1857,8 @@ def main(page: ft.Page):
     vt.start()
     inference_thread.start()
     page.run_task(_ui_update_loop)
+    _refresh_controls(force=True)
+    _ask_pending_report()
 
     if tray_active:
         logger.info("Monitoreo en segundo plano habilitado (icono de bandeja).")

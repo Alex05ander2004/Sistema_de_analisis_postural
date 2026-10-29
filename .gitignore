@@ -36,6 +36,8 @@ data/*.csv
 # Resultados exportados del estudio: son datos de personas (aunque
 # seudonimizados). No deben subirse a un repositorio.
 data/estudio_*/
+# Perfil de cada equipo (código del participante, modo, FOV de su cámara)
+data/estudio_local.json
 resultados/
 
 # Los datos archivados se conservan fuera de git (son mediciones), pero la

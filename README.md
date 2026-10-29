@@ -199,7 +199,7 @@ pip install -r requirements.txt
 | **Cualquier usuario** | `python -m src.ui.app_ui` | **Nada más.** La calibración de postura y de ojos se hace dentro de la app, con el botón *Calibrar* |
 | Quien instala el equipo | `python src/tools/calibrar_fov.py ...` | **Una vez por cámara** (ver abajo). Es la única calibración previa que sigue haciendo falta |
 | El investigador | `calibration_mode.py`, `benchmark_mediapipe.py`, `ab_test_cervical.py`, `transition_test.py` | Solo para las mediciones de la tesis (Capítulo IV). Los participantes **no** las ejecutan |
-| El investigador | `export_study.py` | Para sacar los resultados del estudio (ver abajo) |
+| El investigador | `export_study.py --db recibidos/` | Para sacar los resultados del estudio a partir de los `.zip` de «Exportar mis datos» (ver `docs/protocolo_estudio.md`) |
 
 **Por qué el FOV sigue siendo previo.** La calibración por persona de la app
 fija la postura neutra y el ojo abierto *de esa persona*. El campo de visión
@@ -250,12 +250,18 @@ postural-fatigue-system/
 │   │   ├── fusion_fsm.py     # Máquina de estados multimodal + calibradores
 │   │   └── guided_calibration.py # Calibración guiada (fases, encuadre, reinicios)
 │   ├── storage/
-│   │   └── history_logger.py # Bitácora SQLite
+│   │   └── history_logger.py # Bitácora SQLite (métricas, alertas, autorreporte)
+│   ├── study/
+│   │   ├── field_study.py    # Perfil del equipo, fase línea base / intervención
+│   │   └── data_bundle.py    # «Exportar mis datos» → .zip en el Escritorio
+│   ├── version.py            # APP_VERSION y huella de thresholds.json
 │   ├── tools/                      # Todas aceptan --source -1 (autodetectar)
 │   │   ├── _config.py              # Carga compartida de thresholds.json
 │   │   ├── calibration_mode.py     # Captura θc/EAR/etc a CSV sin disparar alertas
 │   │   ├── stats_report.py         # Reportes de sesión desde SQLite (Cap. IV)
-│   │   ├── export_study.py         # Exporta el estudio a CSV + matriz de confusión
+│   │   ├── export_study.py         # Exporta el estudio: CSV, matriz de confusión, reportes HTML
+│   │   ├── field_analysis.py       # Indicadores del estudio de campo (exposición, pausas…)
+│   │   ├── field_report.py         # Reporte HTML por participante para el especialista
 │   │   ├── calibrar_fov.py         # Calcula el FOV de la cámara (una vez por equipo)
 │   │   ├── ab_test_cervical.py     # Prueba A/B normal vs. cabeza adelantada
 │   │   ├── transition_test.py      # Transición continua de postura
@@ -269,7 +275,7 @@ postural-fatigue-system/
 │       ├── toast_notifier.py # Notificación del SO (no intrusiva)
 │       ├── tray_icon.py      # Icono de bandeja (segundo plano)
 │       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
-├── tests/                    # 361 tests, ~36 s, sin cámara ni MediaPipe
+├── tests/                    # 400 tests, ~50 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
@@ -283,7 +289,7 @@ postural-fatigue-system/
 │   ├── test_posture_reference.py    # θc relativo, indicador 2D, notificaciones
 │   └── test_guided_calibration.py   # Calibración guiada y modos de la app
 └── docs/
-    ├── protocolo_estudio.md             # Muestra, duración, guion y análisis del estudio
+    ├── protocolo_estudio.md             # Estudio: validación + 15 días de campo, qué falta probar
     ├── checklist_pruebas.md             # Pruebas manuales (cámara, bandeja, Cap. IV)
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
     ├── expert_interview_protocol.md     # Acta de la ronda 1 (2026-07-12)
@@ -337,7 +343,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (361 tests, ~36 s, sin cámara ni MediaPipe)
+# Todos los tests (400 tests, ~50 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -408,7 +414,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 361/361 |
+| Tests | 100% verde | `pytest tests/` | ✅ 400/400 |
 
 ---
 

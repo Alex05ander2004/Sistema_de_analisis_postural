@@ -6,6 +6,7 @@ Python, y calcula los indicadores del Capítulo IV.
 
 Qué produce (en --output-dir)
 -----------------------------
+Validación (sesiones de laboratorio con condición etiquetada):
   resumen_sesiones.csv   Una fila por sesión/participante: tiempo de uso,
                          alertas por hora, % del tiempo desviado, Δθc, PERCLOS,
                          tiempo de corrección tras la alerta, evolución entre
@@ -18,8 +19,29 @@ Qué produce (en --output-dir)
                          confianza de Wilson al 95 %.
   eventos.csv            Cada alerta con su condición y el tiempo que tardó el
                          participante en corregir la postura.
-  metricas_detalle.csv   Todas las filas de metrics_log con el participante y
-                         el tiempo relativo, para gráficos de evolución.
+  metricas_detalle.csv   Las filas de metrics_log de las sesiones que NO son
+                         de campo (validación y bases antiguas).
+
+Estudio de campo (sesiones linea_base / intervencion), ver field_analysis.py:
+  resumen_diario.csv         Una fila por participante y día: exposición
+                             cervical por bandas, episodios, hombros, distancia,
+                             PERCLOS, pausas, alertas, corrección, primera
+                             frente a última hora y autorreporte.
+  resumen_participantes.csv  Una fila por participante: días válidos y media
+                             de cada indicador en línea base e intervención,
+                             con su diferencia (lista para la prueba pareada).
+  perfil_horario.csv         Indicadores por hora del día y fase.
+  reportes/reporte_<P>.html  Reporte por participante para el especialista.
+  detalle/metricas_<P>.csv   Filas de metrics_log de campo, un archivo por
+                             participante (una sola tabla con 25 personas x 15
+                             días superaría el límite de filas de Excel).
+
+Entrada
+-------
+--db acepta bases .db, los .zip que genera «Exportar mis datos» y carpetas
+(se buscan .db y .zip dentro). Si un participante envió varios .zip (p. ej.
+el intermedio del día 7 y el final), las sesiones repetidas se cuentan una
+sola vez: cada sesión tiene un identificador único.
 
 Cómo se calcula la precisión
 ----------------------------
@@ -51,6 +73,7 @@ Uso
   python src/tools/export_study.py
   python src/tools/export_study.py --db data/history.db otra/history.db
   python src/tools/export_study.py --output-dir resultados/ronda1
+  python src/tools/export_study.py --db recibidos/ --output-dir resultados/campo
 
 Autor: Tesis Huisa Perez, UNSA 2026
 """
@@ -61,6 +84,9 @@ import json
 import math
 import sqlite3
 import sys
+import tempfile
+import zipfile
+from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, median
@@ -71,6 +97,11 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.tools import field_analysis as fa          # noqa: E402
+from src.tools.field_report import write_reports    # noqa: E402
 DEFAULT_DB = PROJECT_ROOT / "data" / "history.db"
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "thresholds.json"
 
@@ -131,6 +162,14 @@ def load_conditions(config_path: Path) -> Dict[str, dict]:
     return out
 
 
+def load_config(config_path: Path) -> dict:
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def load_dev_threshold(config_path: Path) -> float:
     try:
         with open(config_path, encoding="utf-8") as f:
@@ -144,7 +183,55 @@ def load_dev_threshold(config_path: Path) -> float:
 # Lectura
 # ---------------------------------------------------------------------------
 
-def read_sessions(db_path: Path) -> List[dict]:
+def expand_inputs(paths: Sequence[Path], tmp_dir: Path
+                  ) -> List[Tuple[Path, str]]:
+    """
+    (base .db, nombre de la fuente) para cada entrada: bases, .zip de
+    «Exportar mis datos» o carpetas que los contengan.
+    """
+    out: List[Tuple[Path, str]] = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            found = sorted(list(p.rglob("*.db")) + list(p.rglob("*.zip")))
+            out.extend(expand_inputs(found, tmp_dir))
+        elif p.suffix.lower() == ".zip":
+            if not p.exists():
+                raise FileNotFoundError(f"Archivo no encontrado: {p}")
+            with zipfile.ZipFile(p) as zf:
+                names = [n for n in zf.namelist() if n.endswith(".db")]
+                if not names:
+                    print(f"[AVISO] {p.name} no contiene ninguna base .db")
+                    continue
+                dest = tmp_dir / f"{len(out):03d}_{p.stem}"
+                dest.mkdir(parents=True, exist_ok=True)
+                for n in names:
+                    target = dest / Path(n).name
+                    target.write_bytes(zf.read(n))
+                    out.append((target, p.name))
+        else:
+            if not p.exists():
+                raise FileNotFoundError(f"Base de datos no encontrada: {p}")
+            out.append((p, p.name))
+    return out
+
+
+def read_self_reports(db_path: Path) -> List[dict]:
+    """Autorreportes de una base (lista vacía en bases anteriores)."""
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        tables = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "self_reports" not in tables:
+            return []
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM self_reports ORDER BY created_at")]
+    finally:
+        con.close()
+
+
+def read_sessions(db_path: Path, source: Optional[str] = None) -> List[dict]:
     """Sesiones de una base, con sus métricas y eventos."""
     if not db_path.exists():
         raise FileNotFoundError(f"Base de datos no encontrada: {db_path}")
@@ -169,11 +256,18 @@ def read_sessions(db_path: Path) -> List[dict]:
                 r.setdefault("condition_label", None)
             for e in events:
                 e.setdefault("condition_label", None)
+                e.setdefault("notified", None)
             sessions.append({
-                "fuente": db_path.name,
+                "fuente": source or db_path.name,
                 "id": s["id"], "participante": code,
                 "inicio": s["started_at"], "fin": s["ended_at"],
                 "notas": s["notes"] or "",
+                "fase": (s["study_phase"] if "study_phase" in cols
+                         else None) or "",
+                "version": (s["app_version"] if "app_version" in cols
+                            else None) or "",
+                "config_hash": (s["config_hash"] if "config_hash" in cols
+                                else None) or "",
                 "rows": rows, "events": events,
                 "_mcols": mcols, "_ecols": ecols,
             })
@@ -246,21 +340,21 @@ def score_segment(seg: dict, events: Sequence[dict], cond: Optional[dict],
     return out
 
 
-def correction_seconds(event: dict, rows: Sequence[dict]) -> Optional[float]:
+def correction_seconds(event: dict, rows: Sequence[dict],
+                       ts: Optional[Sequence[float]] = None) -> Optional[float]:
     """
     Segundos desde una alerta cervical hasta que la desviación vuelve por
     debajo de su umbral. None si no hay datos de desviación o no se corrigió.
+
+    `ts` (timestamps de `rows`, ya ordenados) evita recorrer la sesión entera
+    por cada alerta: con 15 días de datos eran cientos de millones de pasos.
     """
     if event["alert_type"] != "cervical_angle" or event.get("threshold") is None:
         return None
-    limit = event["threshold"]
-    for r in rows:
-        if r["timestamp"] <= event["timestamp"]:
-            continue
-        dev = r.get("cervical_deviation")
-        if dev is not None and dev <= limit:
-            return r["timestamp"] - event["timestamp"]
-    return None
+    if ts is None:
+        ts = [r["timestamp"] for r in rows]
+    return fa.correction_after(event["timestamp"], event["threshold"],
+                               ts, rows)
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +391,8 @@ def summarize_session(ses: dict, dev_threshold: float,
     first = sum(1 for e in events if e["timestamp"] < mid)
     second = len(events) - first
 
-    corr = [c for c in (correction_seconds(e, rows) for e in events)
+    ts = [r["timestamp"] for r in rows]
+    corr = [c for c in (correction_seconds(e, rows, ts) for e in events)
             if c is not None]
     cervical = [e for e in events if e["alert_type"] == "cervical_angle"]
 
@@ -310,6 +405,8 @@ def summarize_session(ses: dict, dev_threshold: float,
     return {
         "fuente": ses["fuente"], "sesion": ses["id"],
         "participante": ses["participante"],
+        "fase": ses.get("fase", ""),
+        "version_app": ses.get("version", ""),
         "inicio": _iso(t0), "fin": _iso(ses["fin"]),
         "sesion_cerrada": "si" if ses["fin"] else "no",
         "duracion_min": _r(dur_min, 2),
@@ -417,14 +514,47 @@ METRIC_COLUMNS = [
 ]
 
 
+def _dedupe_sessions(sessions: List[dict]) -> Tuple[List[dict], int]:
+    """
+    Una sesión por id. Si llega repetida (zip intermedio y zip final del
+    mismo participante), se queda la copia con más filas: es la más completa.
+    """
+    best: Dict[str, dict] = {}
+    for s in sessions:
+        cur = best.get(s["id"])
+        if cur is None or (len(s["rows"]), len(s["events"]), s["fin"] or 0) > \
+                (len(cur["rows"]), len(cur["events"]), cur["fin"] or 0):
+            best[s["id"]] = s
+    dup = len(sessions) - len(best)
+    return sorted(best.values(), key=lambda s: s["inicio"]), dup
+
+
+def _dedupe_reports(reports: List[dict]) -> List[dict]:
+    seen, out = set(), []
+    for r in reports:
+        key = (r.get("participant_code"), r["report_date"], r["created_at"])
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
 def export(db_paths: Sequence[Path], out_dir: Path, config_path: Path,
-           grace: float = 5.0, min_seconds: float = 15.0) -> dict:
+           grace: float = 5.0, min_seconds: float = 15.0,
+           reports: bool = True) -> dict:
     conditions = load_conditions(config_path)
     dev_threshold = load_dev_threshold(config_path)
+    cfg_all = load_config(config_path)
+    fcfg = fa.FieldConfig.from_thresholds(cfg_all)
 
     sessions: List[dict] = []
-    for p in db_paths:
-        sessions.extend(read_sessions(p))
+    self_reports: List[dict] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for db, source in expand_inputs(db_paths, Path(tmp)):
+            sessions.extend(read_sessions(db, source))
+            self_reports.extend(read_self_reports(db))
+    sessions, duplicated = _dedupe_sessions(sessions)
+    self_reports = _dedupe_reports(self_reports)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     summaries, all_segments, event_rows, detail = [], [], [], []
@@ -461,20 +591,28 @@ def export(db_paths: Sequence[Path], out_dir: Path, config_path: Path,
         all_segments.extend(seg_rows)
         summaries.append(summarize_session(ses, dev_threshold, seg_rows))
 
+        ts = [r["timestamp"] for r in rows]
         for e in events:
             event_rows.append({
                 "fuente": ses["fuente"], "sesion": ses["id"],
                 "participante": ses["participante"],
+                "fase": ses.get("fase", ""),
                 "hora": _iso(e["timestamp"]),
                 "t_rel_s": _r(e["timestamp"] - ses["inicio"], 1),
                 "tipo": e["alert_type"],
                 "condicion": e.get("condition_label") or "",
+                "mostrada": ("" if e.get("notified") is None
+                             else "si" if e["notified"] else "no"),
                 "valor": _r(e["metric_value"], 3),
                 "umbral": _r(e["threshold"], 3),
                 "duracion_s": _r(e["duration_sec"], 1),
-                "segundos_hasta_corregir": _r(correction_seconds(e, rows), 1),
+                "segundos_hasta_corregir": _r(
+                    correction_seconds(e, rows, ts), 1),
             })
 
+        # El detalle de campo va por participante (ver más abajo).
+        if ses.get("fase") in fa.FIELD_PHASES:
+            continue
         for r in rows:
             d = {"fuente": ses["fuente"], "sesion": ses["id"],
                  "participante": ses["participante"],
@@ -491,16 +629,69 @@ def export(db_paths: Sequence[Path], out_dir: Path, config_path: Path,
     write_csv(out_dir / "segmentos.csv", all_segments)
     write_csv(out_dir / "matriz_confusion.csv", confusion)
     write_csv(out_dir / "eventos.csv", event_rows,
-              ["fuente", "sesion", "participante", "hora", "t_rel_s", "tipo",
-               "condicion", "valor", "umbral", "duracion_s",
-               "segundos_hasta_corregir"])
+              ["fuente", "sesion", "participante", "fase", "hora", "t_rel_s",
+               "tipo", "condicion", "mostrada", "valor", "umbral",
+               "duracion_s", "segundos_hasta_corregir"])
     write_csv(out_dir / "metricas_detalle.csv", detail,
               ["fuente", "sesion", "participante", "hora", "t_rel_s",
                "condicion"] + METRIC_COLUMNS)
 
+    field = export_field(sessions, self_reports, out_dir, fcfg,
+                         planned_days=int(cfg_all.get("study", {}).get(
+                             "field", {}).get("planned_days", 15)),
+                         reports=reports)
+
     return {"sessions": summaries, "segments": all_segments,
             "confusion": confusion, "events": event_rows,
+            "field": field, "duplicated_sessions": duplicated,
             "out_dir": out_dir}
+
+
+def export_field(sessions: Sequence[dict], self_reports: Sequence[dict],
+                 out_dir: Path, fcfg: "fa.FieldConfig",
+                 planned_days: int = 15, reports: bool = True) -> dict:
+    """Indicadores del estudio de campo (si hay sesiones de campo)."""
+    reports_by_code: Dict[str, List[dict]] = {}
+    for r in self_reports:
+        code = r.get("participant_code") or NO_CODE
+        reports_by_code.setdefault(code, []).append(r)
+
+    data = fa.collect_field_data(sessions, reports_by_code, fcfg)
+    if not data:
+        return {"participants": [], "days": []}
+
+    all_days, all_hourly, summaries = [], [], []
+    days_by_code, hourly_by_code = {}, {}
+    detail_dir = out_dir / "detalle"
+    detail_dir.mkdir(exist_ok=True)
+    for code in sorted(data):
+        pd = data[code]
+        days = fa.daily_summary(pd, fcfg)
+        hourly = fa.hourly_profile(pd, fcfg)
+        summary = fa.participant_summary(pd, days, fcfg, planned_days)
+        days_by_code[code], hourly_by_code[code] = days, hourly
+        all_days.extend(days)
+        all_hourly.extend(hourly)
+        summaries.append(summary)
+
+        write_csv(detail_dir / f"metricas_{code}.csv", [
+            dict({"participante": code, "fase": r["_phase"],
+                  "hora": _iso(r["timestamp"]),
+                  "condicion": r.get("condition_label") or ""},
+                 **{c: r.get(c) for c in METRIC_COLUMNS})
+            for r in pd.rows],
+            ["participante", "fase", "hora", "condicion"] + METRIC_COLUMNS)
+
+    write_csv(out_dir / "resumen_diario.csv",
+              [fa.round_row(d) for d in all_days])
+    write_csv(out_dir / "resumen_participantes.csv",
+              [fa.round_row(s) for s in summaries])
+    write_csv(out_dir / "perfil_horario.csv",
+              [fa.round_row(h) for h in all_hourly])
+    if reports:
+        write_reports(out_dir / "reportes", summaries, days_by_code,
+                      hourly_by_code, fcfg.dev_threshold, fcfg.bands)
+    return {"participants": summaries, "days": all_days}
 
 
 def print_summary(result: dict) -> None:
@@ -516,6 +707,32 @@ def print_summary(result: dict) -> None:
     if sin_codigo:
         print(f"[AVISO] {len(sin_codigo)} sesión(es) SIN código de "
               f"participante: no se pueden atribuir a nadie.")
+    if result.get("duplicated_sessions"):
+        print(f"[INFO] {result['duplicated_sessions']} sesión(es) repetidas "
+              f"entre archivos (p. ej. envío intermedio y final): se "
+              f"contaron una sola vez.")
+
+    field = result.get("field") or {}
+    parts_f = field.get("participants") or []
+    if parts_f:
+        validos = [p for p in parts_f if p["valido_para_analisis"] == "si"]
+        print(f"\nEstudio de campo: {len(parts_f)} participante(s), "
+              f"{len(validos)} válido(s) para la comparación pareada.")
+        print(f"  {'part.':8s} {'días':>4s} {'válidos':>7s} {'base':>4s} "
+              f"{'interv':>6s}  {'%desv base→interv':>20s}")
+        for p in parts_f:
+            b, i = p.get("pct_desviado_base"), p.get("pct_desviado_interv")
+            cambio = (f"{b:.1f} → {i:.1f}" if isinstance(b, float)
+                      and isinstance(i, float) else "—")
+            print(f"  {p['participante']:8s} {p['dias_uso']:4d} "
+                  f"{p['dias_validos']:7d} {p['dias_validos_linea_base']:4d} "
+                  f"{p['dias_validos_intervencion']:6d}  {cambio:>20s}")
+        hashes = {h for p in parts_f for h in p["configuraciones"].split(";")
+                  if h}
+        if len(hashes) > 1:
+            print(f"[AVISO] Se usaron {len(hashes)} configuraciones distintas "
+                  f"(config_hash): revisa la columna 'configuraciones' de "
+                  f"resumen_participantes.csv.")
 
     print("\nMatriz de confusión (tramos puntuados):")
     print(f"  {'condición':24s} {'tramos':>6s} {'VP':>4s} {'FN':>4s} "
@@ -538,8 +755,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="Exporta los datos del estudio a CSV y calcula la "
                     "precisión del sistema.")
     ap.add_argument("--db", type=Path, nargs="+", default=[DEFAULT_DB],
-                    help="Una o varias bases SQLite (p. ej. las de cada PC "
-                         "de los participantes)")
+                    help="Bases SQLite, .zip de «Exportar mis datos» o "
+                         "carpetas que los contengan")
     ap.add_argument("--output-dir", type=Path, default=None,
                     help="Carpeta de salida (por defecto data/estudio_<fecha>)")
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -548,13 +765,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                          "aún se le atribuye (default: 5)")
     ap.add_argument("--min-segment-sec", type=float, default=15.0,
                     help="Duración mínima para puntuar un tramo (default: 15)")
+    ap.add_argument("--sin-reportes", action="store_true",
+                    help="No generar los reportes HTML por participante")
     args = ap.parse_args(argv)
 
     out = args.output_dir or (
         PROJECT_ROOT / "data" / f"estudio_{datetime.now():%Y%m%d_%H%M%S}")
     try:
         result = export(args.db, out, args.config,
-                        grace=args.grace_sec, min_seconds=args.min_segment_sec)
+                        grace=args.grace_sec, min_seconds=args.min_segment_sec,
+                        reports=not args.sin_reportes)
     except FileNotFoundError as exc:
         print(f"[ERROR] {exc}")
         return 1

@@ -49,9 +49,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "thresholds.json"
 
@@ -82,6 +79,10 @@ def _read_config(path: Path) -> dict:
 
 
 def main(argv: Optional[list] = None) -> int:
+    # Aquí y no al importar: la app importa corrected_hfov, y en un ejecutable
+    # sin consola sys.stdout es None.
+    if sys.platform == "win32" and sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(
         description="Calcula camera.horizontal_fov_deg a partir de una medición.")
     ap.add_argument("--estimada", type=float, required=True,
