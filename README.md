@@ -240,7 +240,8 @@ postural-fatigue-system/
 ├── src/
 │   ├── capture/
 │   │   ├── video_thread.py   # Hilo de captura + Queue(1)
-│   │   └── camera_source.py  # Autodetección de cámara (compartida app/tools)
+│   │   ├── camera_source.py  # Autodetección de cámara (compartida app/tools)
+│   │   └── camera_usage.py   # Qué otras apps usan la cámara (para cederla)
 │   ├── vision/
 │   │   ├── pose_estimator.py # BlazePose wrapper (process / draw separados)
 │   │   ├── face_estimator.py # Face Mesh wrapper (process / draw separados)
@@ -255,6 +256,7 @@ postural-fatigue-system/
 │   │   ├── field_study.py    # Perfil del equipo, fase línea base / intervención
 │   │   └── data_bundle.py    # «Exportar mis datos» → .zip en el Escritorio
 │   ├── version.py            # APP_VERSION y huella de thresholds.json
+│   ├── paths.py              # Recursos vs datos (%LOCALAPPDATA% en el .exe), log
 │   ├── tools/                      # Todas aceptan --source -1 (autodetectar)
 │   │   ├── _config.py              # Carga compartida de thresholds.json
 │   │   ├── calibration_mode.py     # Captura θc/EAR/etc a CSV sin disparar alertas
@@ -262,6 +264,7 @@ postural-fatigue-system/
 │   │   ├── export_study.py         # Exporta el estudio: CSV, matriz de confusión, reportes HTML
 │   │   ├── field_analysis.py       # Indicadores del estudio de campo (exposición, pausas…)
 │   │   ├── field_report.py         # Reporte HTML por participante para el especialista
+│   │   ├── soak_monitor.py         # Prueba de jornada larga (memoria, CPU, base)
 │   │   ├── calibrar_fov.py         # Calcula el FOV de la cámara (una vez por equipo)
 │   │   ├── ab_test_cervical.py     # Prueba A/B normal vs. cabeza adelantada
 │   │   ├── transition_test.py      # Transición continua de postura
@@ -275,7 +278,8 @@ postural-fatigue-system/
 │       ├── toast_notifier.py # Notificación del SO (no intrusiva)
 │       ├── tray_icon.py      # Icono de bandeja (segundo plano)
 │       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
-├── tests/                    # 400 tests, ~50 s, sin cámara ni MediaPipe
+├── packaging/                # Receta del .exe para participantes (ver LEEME.md)
+├── tests/                    # 425 tests, ~70 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
@@ -343,7 +347,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (400 tests, ~50 s, sin cámara ni MediaPipe)
+# Todos los tests (425 tests, ~70 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -414,7 +418,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 400/400 |
+| Tests | 100% verde | `pytest tests/` | ✅ 425/425 |
 
 ---
 

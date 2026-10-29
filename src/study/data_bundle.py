@@ -10,6 +10,7 @@ Contenido del .zip
                        SQLite: incluye lo que aún esté en el archivo -wal)
   estudio_local.json   perfil del equipo (código, modo, FOV de su cámara)
   thresholds.json      configuración con la que midió la app
+  logs/app.log*        registro técnico de la app (diagnóstico a distancia)
   LEEME.txt            qué es el archivo y qué contiene (y qué NO contiene)
 
 No hay imágenes: la app nunca guarda fotogramas, solo números. El código de
@@ -83,7 +84,8 @@ def _readme(code: str, version: str, n_sessions: int, n_days: int) -> str:
 
 def create_bundle(history_logger, profile_path: Path, config_path: Path,
                   participant: str, app_version: str,
-                  dest_dir: Optional[Path] = None) -> Path:
+                  dest_dir: Optional[Path] = None,
+                  log_dir: Optional[Path] = None) -> Path:
     """Crea el .zip y devuelve su ruta."""
     dest_dir = Path(dest_dir) if dest_dir else desktop_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +114,11 @@ def create_bundle(history_logger, profile_path: Path, config_path: Path,
                              (config_path, "thresholds.json")):
                 if Path(src).exists():
                     zf.write(src, arc)
+            # Los logs (sin imágenes ni nombres) permiten diagnosticar a
+            # distancia: cámara perdida, errores, días sin datos.
+            if log_dir is not None and Path(log_dir).is_dir():
+                for lf in sorted(Path(log_dir).glob("app.log*")):
+                    zf.write(lf, f"logs/{lf.name}")
             zf.writestr("LEEME.txt",
                         _readme(participant, app_version, n_ses, n_days))
         # Renombrar al final: si se corta a medias no queda un .zip que

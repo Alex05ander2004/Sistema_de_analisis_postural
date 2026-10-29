@@ -56,3 +56,11 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# Logs de la app y pruebas de jornada larga
+data/logs/
+data/soak_*.csv
+
+# Ejecutable construido con PyInstaller (packaging/LEEME.md)
+build/
+dist/

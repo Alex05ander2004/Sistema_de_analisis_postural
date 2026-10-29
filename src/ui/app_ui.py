@@ -59,6 +59,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.capture.video_thread import VideoThread
 from src.capture.camera_source import resolve_camera_source
+from src.capture.camera_usage import others_using_camera, own_markers
 from src.vision.pose_estimator import PoseEstimator
 from src.vision.face_estimator import FaceEstimator
 from src.vision.smoothing import DebouncedState, MetricSmootherBank
@@ -83,6 +84,7 @@ from src.study.field_study import (
 from src.study.data_bundle import create_bundle
 from src.tools.calibrar_fov import corrected_hfov
 from src.version import APP_VERSION, config_hash
+from src.paths import data_dir, data_file, resource_root, setup_file_logging
 from src.ui.video_feed import VideoFeed
 from src.ui.telemetry_panel import TelemetryPanel
 from src.ui.alert_notifier import AlertNotifier
@@ -101,10 +103,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app_ui")
 
-_THRESHOLDS_PATH = PROJECT_ROOT / "config" / "thresholds.json"
+_THRESHOLDS_PATH = resource_root() / "config" / "thresholds.json"
 # Perfil propio de ESTE equipo (código, modo del estudio, FOV de su cámara).
 # Va aparte para que thresholds.json sea idéntico en todos los equipos.
-_PROFILE_PATH = PROJECT_ROOT / "data" / "estudio_local.json"
+_PROFILE_PATH = data_dir() / "estudio_local.json"
 
 
 def _load_thresholds() -> dict:
@@ -303,6 +305,12 @@ class InferenceThread(threading.Thread):
         # BlazePose es el modelo caro y θc/ΔE se evalúan en ventanas de 5 s:
         # inferirlo 1 de cada N frames no cambia la detección y libera CPU.
         self._pose_every_n = max(1, int(mp_cfg.get("pose_every_n_frames", 1)))
+        # Tope de FPS de inferencia (0 = sin tope). Las ventanas de alerta son
+        # de 3–8 s: inferir a 22–30 FPS durante una jornada de 8 h solo gasta
+        # CPU y batería del equipo del participante (medido 2026-10-29:
+        # ~1.6 núcleos sin tope). Ver mediapipe.max_inference_fps.
+        max_fps = float(mp_cfg.get("max_inference_fps", 0) or 0)
+        self._min_frame_interval = 1.0 / max_fps if max_fps > 0 else 0.0
 
         # Dos workers: uno por modelo. Ambos leen el mismo buffer RGB en modo
         # solo-lectura, así que no hay carrera de datos.
@@ -342,7 +350,7 @@ class InferenceThread(threading.Thread):
 
         storage_cfg = thresholds.get("storage", {})
         self._db = HistoryLogger(
-            db_path=str(PROJECT_ROOT / storage_cfg.get("db_path", "data/history.db"))
+            db_path=str(data_file(storage_cfg.get("db_path", "data/history.db")))
         )
         if start_mode == "monitoring":
             self._db.start_session(notes="Sesión automática",
@@ -685,6 +693,7 @@ class InferenceThread(threading.Thread):
                 if frame is None:
                     continue
 
+                loop_start = time.perf_counter()
                 self._frame_n += 1
 
                 # --- Una sola conversión de color para ambos modelos -------
@@ -799,6 +808,8 @@ class InferenceThread(threading.Thread):
                     except Empty:
                         pass
 
+                self._throttle(loop_start)
+
                 try:
                     self._state_queue.put_nowait(AppState(
                         frame_b64=b64,
@@ -819,6 +830,14 @@ class InferenceThread(threading.Thread):
             logger.info("InferenceThread detenido.")
 
     # ------------------------------------------------------------------
+
+    def _throttle(self, loop_start: float) -> None:
+        """Espera lo que falte para no superar max_inference_fps."""
+        if self._min_frame_interval <= 0:
+            return
+        remaining = self._min_frame_interval - (time.perf_counter() - loop_start)
+        if remaining > 0:
+            self._stop_event.wait(remaining)
 
     def _should_log(self, metrics: SensorMetrics) -> bool:
         if self._log_interval_sec is None:
@@ -1019,7 +1038,7 @@ def main(page: ft.Page):
 
     profile = LocalProfile.load(_PROFILE_PATH)
     page.title = "Monitor Postural y Fatiga — Edge AI"
-    _icon_path = PROJECT_ROOT / "assets" / "icon.ico"
+    _icon_path = resource_root() / "assets" / "icon.ico"
     if _icon_path.exists():
         page.window.icon = str(_icon_path)
     page.theme_mode = ft.ThemeMode.DARK
@@ -1093,13 +1112,18 @@ def main(page: ft.Page):
 
     state_queue: Queue = Queue(maxsize=1)
 
-    camera_source = resolve_camera_source(cam_cfg.get("source_index", -1))
+    source_index = cam_cfg.get("source_index", -1)
+    camera_source = resolve_camera_source(source_index)
 
     vt = VideoThread(
         source=camera_source,
         width=video_width,
         height=video_height,
         target_fps=cam_cfg.get("target_fps", 30),
+        # Con autodetección, al perder la cámara se vuelve a buscar cuál da
+        # imagen real (ver VideoThread.source_resolver).
+        source_resolver=((lambda: resolve_camera_source(-1, verbose=False))
+                         if source_index == -1 else None),
     )
     inference_thread = InferenceThread(
         video_thread=vt,
@@ -1169,6 +1193,7 @@ def main(page: ft.Page):
 
     def _on_pause_click(_):
         paused = not inference_thread.is_paused
+        _yield["auto"] = False          # el usuario manda sobre la cesión
         inference_thread.set_paused(paused)
         if tray is not None:
             tray.set_paused(paused)
@@ -1484,7 +1509,7 @@ def main(page: ft.Page):
                 path = create_bundle(
                     inference_thread.history, _PROFILE_PATH,
                     _THRESHOLDS_PATH, inference_thread.participant,
-                    APP_VERSION)
+                    APP_VERSION, log_dir=data_dir() / "logs")
                 _snack(f"Datos guardados en el Escritorio: {path.name}. "
                        "Envía ese archivo al investigador.", ms=12000)
                 _reveal(path)
@@ -1671,6 +1696,47 @@ def main(page: ft.Page):
     # ----------------------------------------------------------------
     update_interval_ms = ui_cfg.get("video_update_interval_ms", 33)
 
+    _cam = {"lost_since": None, "notified": False}
+    _yield = {"auto": False, "apps": [], "stop": threading.Event()}
+    yield_enabled = bool(cam_cfg.get("yield_to_other_apps", True))
+
+    def _apply_banner() -> bool:
+        """
+        Banda de aviso: un problema de cámara (ocupada por otra app, perdida
+        tras suspender) tiene prioridad sobre el aviso de encuadre, porque
+        sin cámara no se mide nada. Devuelve True si cambió algo.
+
+        Si la cámara lleva 5 min sin funcionar durante el seguimiento, se
+        avisa una vez desde la bandeja: con la ventana oculta, el participante
+        no sabría que ha dejado de medirse.
+        """
+        if inference_thread.is_paused and _yield["auto"]:
+            cam_msg = (f"En pausa: {', '.join(_yield['apps'])} está usando la "
+                       "cámara. El seguimiento se reanudará solo al terminar.")
+        else:
+            cam_msg = "" if inference_thread.is_paused else vt.status_message
+        msg = cam_msg or _ui.get("setup_hint", "")
+        now = time.monotonic()
+        if (cam_msg and inference_thread.mode == "monitoring"
+                and not inference_thread.is_paused):
+            if _cam["lost_since"] is None:
+                _cam["lost_since"] = now
+            elif (not _cam["notified"] and tray is not None
+                  and now - _cam["lost_since"] >= 300):
+                _cam["notified"] = True
+                tray.notify("La cámara no está disponible",
+                            "Hace 5 minutos que no se puede medir. Si terminó "
+                            "tu videollamada y sigue igual, cierra y vuelve "
+                            "a abrir la app.")
+        else:
+            _cam["lost_since"] = None
+            _cam["notified"] = False
+        if (setup_banner.visible, setup_banner_text.value) == (bool(msg), msg):
+            return False
+        setup_banner.visible = bool(msg)
+        setup_banner_text.value = msg
+        return True
+
     async def _ui_update_loop():
         try:
             while _running["value"]:
@@ -1682,16 +1748,17 @@ def main(page: ft.Page):
                         telemetry_panel.update(state.metrics, fps=state.fps,
                                                timer_status=state.timer_status)
                         _ui["distance"] = state.metrics.distance_m
-                    setup_banner.visible = bool(state.setup_hint)
-                    setup_banner_text.value = state.setup_hint
+                    _ui["setup_hint"] = state.setup_hint
+                    _apply_banner()
                     _ui["calibration"] = state.calibration or {}
                     calibration_view.update(_ui["calibration"], state.mode)
                     _refresh_controls()
                     page.update()
                 except Empty:
-                    # Sin estado nuevo (p. ej. en pausa): los botones deben
-                    # reflejar igualmente un cambio de modo.
-                    if _refresh_controls():
+                    # Sin estado nuevo (p. ej. en pausa o sin cámara): los
+                    # botones y el aviso de cámara deben reflejarse igual.
+                    changed = _apply_banner()
+                    if _refresh_controls() or changed:
                         page.update()
                 except Exception:
                     logger.exception("UI loop error")
@@ -1727,6 +1794,7 @@ def main(page: ft.Page):
         _shutdown_done.set()
         logger.info("Cerrando aplicación…")
         _running["value"] = False
+        _yield["stop"].set()
         inference_thread.stop()
         vt.stop()
         inference_thread.join(timeout=5.0)
@@ -1769,7 +1837,43 @@ def main(page: ft.Page):
         logger.info("Ventana oculta; el monitoreo continúa en segundo plano.")
 
     def _on_tray_pause(paused: bool):
+        _yield["auto"] = False
         inference_thread.set_paused(paused)
+
+    # ----------------------------------------------------------------
+    # Ceder la cámara a otras aplicaciones (videollamadas)
+    #
+    # La cámara de prueba no se comparte: con la app midiendo, otro programa
+    # recibía 0 imágenes. Sin esto la app dejaría negra la cámara del
+    # participante en Teams/Zoom. Cada 3 s se mira qué otras apps usan la
+    # cámara (src/capture/camera_usage.py); si hay alguna, se pausa sola
+    # (libera la cámara) y se reanuda al terminar. Una pausa del usuario
+    # nunca se reanuda automáticamente.
+    # ----------------------------------------------------------------
+    def _yield_loop():
+        markers = own_markers()
+        notified = False
+        while not _yield["stop"].wait(3.0):
+            if inference_thread.mode != "monitoring":
+                continue
+            others = others_using_camera(markers)
+            if others and not inference_thread.is_paused:
+                _yield["auto"], _yield["apps"] = True, others
+                logger.info("Cámara cedida a: %s", ", ".join(others))
+                inference_thread.set_paused(True)
+                if tray is not None and not notified:
+                    notified = True
+                    tray.notify("Seguimiento en pausa",
+                                f"{', '.join(others)} está usando la cámara. "
+                                "Se reanudará solo cuando termine.")
+            elif not others and _yield["auto"] and inference_thread.is_paused:
+                _yield["auto"] = False
+                logger.info("La cámara quedó libre: se reanuda el seguimiento.")
+                inference_thread.set_paused(False)
+
+    if yield_enabled and sys.platform == "win32":
+        threading.Thread(target=_yield_loop, name="CameraYield",
+                         daemon=True).start()
 
     def _do_quit():
         _shutdown()
@@ -1868,5 +1972,13 @@ def main(page: ft.Page):
             "cerrar la ventana terminará la aplicación.")
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Punto de entrada (también el del .exe)."""
+    log_path = setup_file_logging()
+    logger.info("Monitor Postural %s · datos en %s · log en %s",
+                APP_VERSION, data_dir(), log_path)
     ft.app(target=main)
+
+
+if __name__ == "__main__":
+    run()

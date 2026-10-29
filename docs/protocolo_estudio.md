@@ -241,52 +241,68 @@ sesión tiene un identificador único.
 
 ## 10. Qué falta probar antes de entregar la app
 
-Ordenado por prioridad. Las casillas son para ir marcando.
+### Ya resuelto en el código (2026-10-29)
 
-### Bloqueantes (sin esto no se puede empezar)
+| Problema | Qué se hizo | Cómo se comprobó |
+|---|---|---|
+| La cámara no se recuperaba nunca tras una videollamada o una suspensión (y el log crecía ~100 líneas/s) | Reconexión con espera creciente, aviso en la ventana y en la bandeja tras 5 min | 9 pruebas con cámara simulada |
+| Si la app arrancaba con la cámara real ocupada, se quedaba para siempre en la cámara IR (negra) | Al perder la cámara se vuelve a autodetectar | Reproducido con el `.exe` real y corregido |
+| **La app deja NEGRA la cámara de otras apps** (0 de 100 lecturas con imagen en la prueba) | La app cede la cámara: se pausa sola si otra app la usa y se reanuda al terminar | Lectura del registro probada; **falta verificarlo con una llamada real (abajo)** |
+| No había ejecutable | `packaging/` (PyInstaller), datos en `%LOCALAPPDATA%\MonitorPostural`, log a archivo incluido en el `.zip` | El `.exe` arranca, abre la cámara, calibra y registra |
+| ~1.6 núcleos de CPU durante toda la jornada | Tope de 12 FPS de inferencia (`mediapipe.max_inference_fps`) | Medido con el `.exe`: ~1.1 núcleos (−33 %) |
 
-- [ ] **Umbral de cabeza adelantada (D.3)**, §3 paso 1.
-- [ ] **Instalador `.exe`** probado en una PC **sin Python**: abre, detecta la
-  cámara, guarda en `data/`, muestra notificaciones y exporta el `.zip`.
-- [ ] **Jornada de 8 h seguidas** en segundo plano. Anotar al inicio y al final
-  la memoria del proceso (Administrador de tareas) y el tamaño de
-  `data/history.db` (esperado: ~0.5 MB por hora). Ni cierres ni memoria que crezca
-  sin parar.
-- [ ] **Cámara ocupada:** con la app monitoreando, abrir Teams, Zoom o Meet con
-  vídeo. ¿Qué pasa con la app? ¿Y al cerrar la videollamada?
-- [ ] **Suspender e hibernar** el portátil con la app monitoreando, y volver.
+### Lo que tienes que probar tú (en este orden)
 
-### Importantes
+- [ ] **1. Umbral de cabeza adelantada (D.3)**, §3 paso 1. Sigue siendo lo más
+  importante.
 
-- [ ] **Línea base de verdad silenciosa:** en modo Campo con un código nuevo,
-  forzar una mala postura. No debe aparecer ningún aviso, pero `eventos.csv`
-  debe tener la alerta con `mostrada = no`.
-- [ ] **Paso a intervención:** con el código de prueba, usar la app 5 días ≥ 60
-  min (o bajar `baseline_days` a 1 para la prueba) y comprobar que al día
-  siguiente aparecen los avisos y la barra dice *"Avisos activos"*.
-- [ ] **Encuesta:** sale al pulsar Salir tras ≥ 30 min de uso; no vuelve a
-  salir el mismo día; si se apaga el equipo sin salir, aparece al abrir al día
-  siguiente.
-- [ ] **Exportar mis datos** con la app monitoreando: el `.zip` aparece en el
-  Escritorio (también con OneDrive) y `export_study.py` lo lee.
-- [ ] **Notificaciones** en un equipo ajeno: con "No molestar" activado no se
-  ven; hay que pedir al participante que permita las de la app.
-- [ ] **Luz baja y lentes:** calibrar y trabajar 10 min de noche y con lentes;
-  revisar que el PERCLOS no se dispare con los ojos abiertos.
-- [ ] **Cámara externa sobre otro monitor** (no centrada): la postura de
-  referencia debería compensarlo; comprobarlo.
-- [ ] **Equipo lento:** si da menos de 10 FPS, probar
-  `pose_every_n_frames = 2` y medir otra vez.
+- [ ] **2. Ceder la cámara a una videollamada.** Con la app monitoreando:
+  1. Abre Teams, Zoom o Meet y enciende la cámara.
+  2. En una terminal: `python -m src.capture.camera_usage`. Debe decir
+     *"Otras apps usando la cámara: Teams"* (o Zoom…).
+  3. En ≤ 3 s la app debe pasar a *"En pausa: Teams está usando la cámara"* y
+     tu cámara debe verse bien en la llamada.
+  4. Apaga la cámara de la llamada: la app debe reanudarse sola.
+  Si en el paso 2 no aparece la app de la llamada, **avísame**: el método de
+  detección no funciona en tu Windows y hay que buscar otro.
 
-### Del ciclo de datos
+- [ ] **3. Suspender y volver.** Con la app monitoreando, cierra la tapa del
+  portátil 2 minutos y ábrela. La app debe volver a medir sola (en el log:
+  `Cámara: reconnecting → ok`).
 
-- [ ] Juntar los `.zip` del piloto (intermedio y final) y ejecutar el
-  exportador: sin sesiones duplicadas, reportes HTML legibles y CSV que abren
-  en Excel.
-- [ ] Revisar un `reporte_P0X.html` con el especialista **antes** del estudio:
-  ¿le sirve?, ¿falta algo?
+- [ ] **4. Jornada de 8 h.** Abre la app (mejor el `.exe`), calibra, inicia, y
+  en otra terminal:
+  ```bash
+  python src/tools/soak_monitor.py --horas 8
+  ```
+  Trabaja normal. Al final imprime el veredicto: memoria estable (sin fuga),
+  CPU media, crecimiento de la base y si la app se cerró sola.
 
----
+- [ ] **5. El `.exe` en una PC sin Python** (la de un amigo o familiar):
+  descomprimir, abrir, calibrar, 10 min de seguimiento, Exportar mis datos, y
+  leer ese `.zip` con `export_study.py`. Ver `packaging/LEEME.md`.
+
+- [ ] **6. Línea base silenciosa y paso a intervención**: en modo Campo con un
+  código de prueba (`baseline_days: 1` para no esperar 5 días). Primer día sin
+  avisos (`mostrada = no` en `eventos.csv`), al día siguiente con avisos.
+
+- [ ] **7. Encuesta diaria**: sale al pulsar Salir tras ≥ 30 min de uso, no se
+  repite el mismo día, y si se apaga el equipo sin salir aparece al abrir al
+  día siguiente.
+
+- [ ] **8. Luz baja y lentes**: 10 min de noche y con lentes; el PERCLOS no
+  debe dispararse con los ojos abiertos.
+
+- [ ] **9. Notificaciones en otro equipo**: con "No molestar" no se ven; pedir
+  al participante que permita las de la app.
+
+### Decisiones pendientes
+
+- **Enfriamiento entre alertas** (30 s ahora; recomendado 120–300 s en campo).
+- **Más ahorro de CPU** si un equipo de participante va lento:
+  `pose_every_n_frames: 2` o `pose_model_complexity: 0`. Medir antes con
+  `benchmark_mediapipe.py` y declararlo.
+- **Calendario** (§11).
 
 ## 11. Calendario: aviso importante
 
