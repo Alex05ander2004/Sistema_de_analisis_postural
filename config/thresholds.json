@@ -99,6 +99,20 @@
     "_face_draw_mode_comment": "'metrics' dibuja solo los 12 puntos de ojos y 4 de boca que entran en el EAR/MAR (~16 primitivas). 'contours' dibuja los contornos faciales (~130 líneas). 'tesselation' dibuja la malla completa (~2600 segmentos por frame): cuesta más que la propia inferencia de Face Mesh y no aporta ninguna información a las métricas — usar solo para capturas de pantalla del documento."
   },
 
+  "study": {
+    "enabled": true,
+    "_enabled_comment": "Modo estudio. Con enabled=true la app pide un CÓDIGO DE PARTICIPANTE antes de poder iniciar el seguimiento (queda guardado en sessions.participant_code) y, durante el seguimiento, muestra un selector de CONDICIÓN del protocolo (cada fila de metrics_log y cada alerta guardan la condición vigente). Sin la condición no se puede calcular la precisión del sistema: no habría forma de saber qué estaba haciendo realmente el participante. Poner false para el uso diario fuera del estudio. Los códigos deben ser seudónimos (P01, P02…), nunca nombres.",
+    "conditions": [
+      {"id": "correcta", "label": "Postura correcta", "expected_alert": null},
+      {"id": "cabeza_adelantada", "label": "Cabeza adelantada", "expected_alert": "cervical_angle"},
+      {"id": "hombros_desnivelados", "label": "Hombros desnivelados", "expected_alert": "shoulder_asymmetry"},
+      {"id": "ojos_cerrados", "label": "Ojos cerrados (4 s o más)", "expected_alert": ["eye_fatigue", "drowsiness"]},
+      {"id": "bostezo", "label": "Bostezo simulado", "expected_alert": "yawn"},
+      {"id": "libre", "label": "Uso libre (sin protocolo)", "expected_alert": null, "scored": false}
+    ],
+    "_conditions_comment": "expected_alert = tipo(s) de alerta que el sistema DEBE emitir en esa condición (null = ninguna: una alerta ahí es un falso positivo). scored=false excluye la condición de la matriz de confusión. Se pueden añadir condiciones (p. ej. cabeza_adelantada_6cm) sin tocar código; el protocolo está en docs/protocolo_estudio.md."
+  },
+
   "calibration": {
     "countdown_sec": 3.0,
     "framing_grace_sec": 1.0,

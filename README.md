@@ -192,7 +192,30 @@ pip install -r requirements.txt
 > pip list | grep -i opencv
 > ```
 
-### 3. Ejecutar la aplicación
+### 3. Qué ejecutar y cuándo
+
+| Quién | Qué | Cuándo |
+|---|---|---|
+| **Cualquier usuario** | `python -m src.ui.app_ui` | **Nada más.** La calibración de postura y de ojos se hace dentro de la app, con el botón *Calibrar* |
+| Quien instala el equipo | `python src/tools/calibrar_fov.py ...` | **Una vez por cámara** (ver abajo). Es la única calibración previa que sigue haciendo falta |
+| El investigador | `calibration_mode.py`, `benchmark_mediapipe.py`, `ab_test_cervical.py`, `transition_test.py` | Solo para las mediciones de la tesis (Capítulo IV). Los participantes **no** las ejecutan |
+| El investigador | `export_study.py` | Para sacar los resultados del estudio (ver abajo) |
+
+**Por qué el FOV sigue siendo previo.** La calibración por persona de la app
+fija la postura neutra y el ojo abierto *de esa persona*. El campo de visión
+(FOV) es una propiedad de la *cámara*: de él depende la estimación de
+distancia, y con ella el control de encuadre de 0.50–0.70 m de la calibración
+guiada. Se mide una vez, con una cinta métrica, y vale para todos los usuarios
+de esa cámara:
+
+```bash
+python src/tools/calibrar_fov.py --estimada 0.79 --real 0.60
+```
+
+(0.79 es lo que muestra la tarjeta de calibración; 0.60 la distancia medida.)
+Imprime el valor para `camera.horizontal_fov_deg` en `config/thresholds.json`.
+
+### 4. Ejecutar la aplicación
 
 ```bash
 python -m src.ui.app_ui
@@ -232,6 +255,8 @@ postural-fatigue-system/
 │   │   ├── _config.py              # Carga compartida de thresholds.json
 │   │   ├── calibration_mode.py     # Captura θc/EAR/etc a CSV sin disparar alertas
 │   │   ├── stats_report.py         # Reportes de sesión desde SQLite (Cap. IV)
+│   │   ├── export_study.py         # Exporta el estudio a CSV + matriz de confusión
+│   │   ├── calibrar_fov.py         # Calcula el FOV de la cámara (una vez por equipo)
 │   │   ├── ab_test_cervical.py     # Prueba A/B normal vs. cabeza adelantada
 │   │   ├── transition_test.py      # Transición continua de postura
 │   │   └── benchmark_mediapipe.py  # Latencia REAL, secuencial vs. paralelo
@@ -244,7 +269,7 @@ postural-fatigue-system/
 │       ├── toast_notifier.py # Notificación del SO (no intrusiva)
 │       ├── tray_icon.py      # Icono de bandeja (segundo plano)
 │       └── alert_notifier.py # Modal de pausa activa (solo alertas agudas)
-├── tests/                    # 314 tests, ~28 s, sin cámara ni MediaPipe
+├── tests/                    # 361 tests, ~36 s, sin cámara ni MediaPipe
 │   ├── test_geometry.py             # Geometría + regresiones de sesgo y escala
 │   ├── test_fusion_fsm.py           # FSM con reloj falso (ventanas reales de 3-8 s)
 │   ├── test_smoothing.py            # Filtrado temporal
@@ -258,6 +283,7 @@ postural-fatigue-system/
 │   ├── test_posture_reference.py    # θc relativo, indicador 2D, notificaciones
 │   └── test_guided_calibration.py   # Calibración guiada y modos de la app
 └── docs/
+    ├── protocolo_estudio.md             # Muestra, duración, guion y análisis del estudio
     ├── checklist_pruebas.md             # Pruebas manuales (cámara, bandeja, Cap. IV)
     ├── validation_report.md             # Reporte Capítulo IV (resultados medidos)
     ├── expert_interview_protocol.md     # Acta de la ronda 1 (2026-07-12)
@@ -311,7 +337,7 @@ entre 55° y 78° según el modelo:
 ## Ejecutar pruebas
 
 ```bash
-# Todos los tests (314 tests, ~28 s, sin cámara ni MediaPipe)
+# Todos los tests (361 tests, ~36 s, sin cámara ni MediaPipe)
 python -m pytest tests/ -v
 
 # Solo tests de geometría
@@ -382,7 +408,7 @@ python src/tools/stats_report.py --list-sessions
 | Latencia geometry+FSM puro | < 50 ms | `test_performance.py` | ✅ ~0.1 ms |
 | Precisión | ≥ 90% | Validación con usuarios (Cap. IV) | ⬜ Pendiente sesión real |
 | Memoria | Estable | `test_performance.py::TestMemoryStability` | ✅ 0.0 MB de crecimiento |
-| Tests | 100% verde | `pytest tests/` | ✅ 314/314 |
+| Tests | 100% verde | `pytest tests/` | ✅ 361/361 |
 
 ---
 

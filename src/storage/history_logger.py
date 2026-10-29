@@ -150,11 +150,33 @@ class HistoryLogger:
             # hombros). Solo se mide, para compararlo con θc en la validación.
             "neck_ratio":         "REAL",
         }
+        # Condición del protocolo de estudio vigente en cada fila (p. ej.
+        # "cabeza_adelantada"). Permite cruzar lo que el sistema midió y avisó
+        # con lo que el participante estaba haciendo realmente, que es lo que
+        # hace falta para calcular la precisión. "" = sin condición.
+        nuevas["condition_label"] = "TEXT"
         for col, tipo in nuevas.items():
             if col not in existing:
                 self._conn.execute(
                     f"ALTER TABLE metrics_log ADD COLUMN {col} {tipo}")
                 logger.info("metrics_log: columna '%s' añadida por migración.", col)
+
+        # sessions.participant_code: código seudonimizado del participante
+        # (P01, P02…). Nunca un nombre. Sin él no se puede saber de quién es
+        # cada sesión ni analizar la evolución de una misma persona.
+        ses = {row["name"] for row in
+               self._conn.execute("PRAGMA table_info(sessions)")}
+        if "participant_code" not in ses:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN participant_code TEXT")
+            logger.info("sessions: columna 'participant_code' añadida.")
+
+        ev = {row["name"] for row in
+              self._conn.execute("PRAGMA table_info(events)")}
+        if "condition_label" not in ev:
+            self._conn.execute(
+                "ALTER TABLE events ADD COLUMN condition_label TEXT")
+            logger.info("events: columna 'condition_label' añadida.")
 
     @contextmanager
     def _cursor(self):
@@ -172,9 +194,17 @@ class HistoryLogger:
     # Gestión de sesiones
     # ------------------------------------------------------------------
 
-    def start_session(self, notes: str = "") -> str:
+    def start_session(self, notes: str = "",
+                      participant_code: str = "") -> str:
         """
         Inicia una nueva sesión de monitoreo.
+
+        Parameters
+        ----------
+        notes:
+            Texto libre; la app guarda aquí un resumen de la calibración.
+        participant_code:
+            Código seudonimizado del participante ("" si no es un estudio).
 
         Returns
         -------
@@ -186,8 +216,9 @@ class HistoryLogger:
 
         with self._cursor() as cur:
             cur.execute(
-                "INSERT INTO sessions (id, started_at, notes) VALUES (?, ?, ?)",
-                (session_id, time.time(), notes),
+                "INSERT INTO sessions (id, started_at, notes, participant_code)"
+                " VALUES (?, ?, ?, ?)",
+                (session_id, time.time(), notes, participant_code or None),
             )
 
         logger.info("Sesión iniciada: %s", session_id)
@@ -210,7 +241,7 @@ class HistoryLogger:
     # Registro de alertas
     # ------------------------------------------------------------------
 
-    def log_event(self, alert_event) -> None:
+    def log_event(self, alert_event, condition: str = "") -> None:
         """
         Registra un AlertEvent del FSM en la tabla events.
 
@@ -218,6 +249,8 @@ class HistoryLogger:
         ----------
         alert_event:
             Instancia de fusion_fsm.AlertEvent.
+        condition:
+            Condición del protocolo de estudio en el momento de la alerta.
         """
         if not self._session_id:
             logger.warning("log_event: no hay sesión activa, iniciando una automáticamente.")
@@ -227,8 +260,8 @@ class HistoryLogger:
             cur.execute(
                 """INSERT INTO events
                    (session_id, timestamp, alert_type, metric_value,
-                    threshold, duration_sec, message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    threshold, duration_sec, message, condition_label)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     self._session_id,
                     alert_event.timestamp,
@@ -237,6 +270,7 @@ class HistoryLogger:
                     alert_event.threshold,
                     alert_event.duration_sec,
                     alert_event.message,
+                    condition or None,
                 ),
             )
 
@@ -272,9 +306,10 @@ class HistoryLogger:
                     ear_avg, mouth_opening, fps, face_detected, pose_detected,
                     cervical_sagittal, cervical_lateral, distance_m,
                     perclos, blink_rate_per_min, pose_valid, ear_threshold,
-                    cervical_baseline, cervical_deviation, neck_ratio)
+                    cervical_baseline, cervical_deviation, neck_ratio,
+                    condition_label)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?)""",
+                           ?, ?, ?, ?)""",
                 (
                     self._session_id,
                     metrics.timestamp,
@@ -295,6 +330,7 @@ class HistoryLogger:
                     _opt("cervical_baseline", 3),
                     _opt("cervical_deviation", 3),
                     _opt("neck_ratio", 4),
+                    getattr(metrics, "condition_label", "") or None,
                 ),
             )
 

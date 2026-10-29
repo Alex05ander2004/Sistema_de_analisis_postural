@@ -33,6 +33,11 @@ data/calibration_*.csv
 data/session_*_report.json
 data/*.csv
 
+# Resultados exportados del estudio: son datos de personas (aunque
+# seudonimizados). No deben subirse a un repositorio.
+data/estudio_*/
+resultados/
+
 # Los datos archivados se conservan fuera de git (son mediciones), pero la
 # advertencia de por qué NO deben usarse sí debe viajar con el repositorio.
 # Nota: hay que excluir `data/archive/*` y no `data/archive/`, porque git no

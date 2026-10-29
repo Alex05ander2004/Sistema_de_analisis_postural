@@ -96,6 +96,8 @@ class SensorMetrics:
                                                 # usuario (None = calibrando)
     cervical_deviation: Optional[float] = None  # θc − línea base
     neck_ratio: Optional[float] = None          # indicador 2D cuello/hombros
+    condition_label: str = ""   # condición del protocolo de estudio en curso
+                                # ("" = ninguna); ver HistoryLogger
 
     timestamp: float = field(default_factory=time.time)
     monotonic: float = field(default_factory=time.perf_counter)

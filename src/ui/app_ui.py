@@ -210,6 +210,14 @@ class InferenceThread(threading.Thread):
         self._mode = start_mode
         self._commands: Queue = Queue()
 
+        # Modo estudio: código de participante y condición del protocolo. Son
+        # cadenas que la interfaz asigna y este hilo solo lee: una asignación
+        # de str es atómica en CPython, no hacen falta cerrojos.
+        study_cfg = thresholds.get("study", {})
+        self._study_enabled = bool(study_cfg.get("enabled", False))
+        self._participant = ""
+        self._condition = ""
+
         ui_cfg_early = thresholds.get("ui", {})
         self._skip_render_when_hidden = bool(
             ui_cfg_early.get("skip_render_when_hidden", True))
@@ -289,7 +297,8 @@ class InferenceThread(threading.Thread):
             db_path=str(PROJECT_ROOT / storage_cfg.get("db_path", "data/history.db"))
         )
         if start_mode == "monitoring":
-            self._db.start_session(notes="Sesión automática")
+            self._db.start_session(notes="Sesión automática",
+                                   participant_code=self._participant)
 
         calib_cfg = thresholds.get("calibration", {})
         self._calibration = GuidedCalibration(
@@ -386,9 +395,39 @@ class InferenceThread(threading.Thread):
     @property
     def can_start(self) -> bool:
         """Se puede iniciar el seguimiento: calibrado, o nada que calibrar."""
-        return (self._mode == "ready"
-                or (self._mode == "preview"
-                    and not self._fsm.needs_calibration))
+        calibrated = (self._mode == "ready"
+                      or (self._mode == "preview"
+                          and not self._fsm.needs_calibration))
+        return calibrated and self.study_ready
+
+    @property
+    def study_enabled(self) -> bool:
+        return self._study_enabled
+
+    @property
+    def participant(self) -> str:
+        return self._participant
+
+    @property
+    def condition(self) -> str:
+        return self._condition
+
+    def set_participant(self, code: str) -> None:
+        """
+        Código seudonimizado del participante. Se normaliza (mayúsculas, sin
+        espacios) para que "p 01" y "P01" no acaben como dos participantes en
+        el análisis.
+        """
+        self._participant = "".join(str(code).split()).upper()
+
+    def set_condition(self, condition: str) -> None:
+        """Condición del protocolo vigente; se estampa en filas y alertas."""
+        self._condition = str(condition or "")
+
+    @property
+    def study_ready(self) -> bool:
+        """En modo estudio hace falta un código antes de iniciar."""
+        return (not self._study_enabled) or bool(self._participant)
 
     def request_calibration(self) -> None:
         """Pide empezar (o repetir) la calibración guiada."""
@@ -431,7 +470,11 @@ class InferenceThread(threading.Thread):
                 if not self.can_start:
                     logger.info("Inicio ignorado: falta calibrar.")
                     continue
-                self._db.start_session(notes=self._session_notes())
+                self._db.start_session(notes=self._session_notes(),
+                                       participant_code=self._participant)
+                # Al empezar, el participante está en uso libre hasta que el
+                # evaluador marque la primera condición del protocolo.
+                self._condition = "libre" if self._study_enabled else ""
                 self._fsm.reset_timers()
                 self._smoothers.reset()
                 self._mode = "monitoring"
@@ -461,7 +504,7 @@ class InferenceThread(threading.Thread):
         evento ya está registrado.
         """
         try:
-            self._db.log_event(alert_event)
+            self._db.log_event(alert_event, condition=self._condition)
         except Exception:
             logger.exception("No se pudo registrar el evento en la bitácora")
         if self._on_alert_ui:
@@ -550,6 +593,7 @@ class InferenceThread(threading.Thread):
                 metrics.ear_threshold = timer_status.get("ear_threshold")
                 baseline = timer_status.get("cervical_baseline")
                 metrics.cervical_baseline = baseline
+                metrics.condition_label = self._condition
                 if baseline is not None and metrics.pose_detected:
                     metrics.cervical_deviation = metrics.cervical_angle - baseline
 
@@ -994,6 +1038,51 @@ def main(page: ft.Page):
 
     _ui = {"calibration": {}, "signature": None}
 
+    # ----------------------------------------------------------------
+    # Modo estudio: código de participante y condición del protocolo
+    # ----------------------------------------------------------------
+    study_cfg = thresholds.get("study", {})
+    study_on = bool(study_cfg.get("enabled", False))
+    study_conditions = study_cfg.get("conditions", [])
+
+    def _on_participant_change(e):
+        inference_thread.set_participant(e.control.value or "")
+        _refresh_controls(force=True)
+        page.update()
+
+    participant_field = ft.TextField(
+        label="Código de participante (P01, P02…)",
+        hint_text="Solo un código, nunca el nombre",
+        on_change=_on_participant_change,
+        text_size=14, height=48, border_color="#2A2A4A",
+        visible=study_on,
+    )
+
+    def _on_condition_change(e):
+        inference_thread.set_condition(e.control.value or "")
+
+    condition_dropdown = ft.Dropdown(
+        label="Condición del protocolo",
+        value="libre",
+        options=[ft.dropdown.Option(c["id"], c.get("label", c["id"]))
+                 for c in study_conditions],
+        on_change=_on_condition_change,
+        text_size=14, width=360, border_color="#2A2A4A",
+    )
+    study_bar = ft.Container(
+        content=ft.Row([
+            ft.Icon(ft.icons.SCIENCE_OUTLINED, color="#00BCD4", size=18),
+            ft.Text("Modo estudio", size=13, weight=ft.FontWeight.W_600,
+                    color=ft.colors.WHITE),
+            ft.Container(expand=True),
+            condition_dropdown,
+        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor="#16162A", border=ft.border.all(1, "#2A2A4A"),
+        border_radius=10,
+        padding=ft.padding.symmetric(vertical=6, horizontal=14),
+        visible=False,
+    )
+
     def _refresh_controls(force: bool = False) -> bool:
         """
         Ajusta la barra de control al modo del hilo de inferencia.
@@ -1009,7 +1098,8 @@ def main(page: ft.Page):
         phase = calib.get("phase", "idle")
         can_start = inference_thread.can_start
 
-        signature = (mode, paused, checks_ok, phase, can_start)
+        code = inference_thread.participant
+        signature = (mode, paused, checks_ok, phase, can_start, code)
         if not force and signature == _ui["signature"]:
             return False
         _ui["signature"] = signature
@@ -1017,7 +1107,9 @@ def main(page: ft.Page):
         if mode == "monitoring" and paused:
             status_dot.bgcolor, status_text.value = "#FFAA00", "En pausa — cámara apagada"
         elif mode == "monitoring":
-            status_dot.bgcolor, status_text.value = "#00C853", "Monitoreando"
+            status_dot.bgcolor = "#00C853"
+            status_text.value = ("Monitoreando" if not code
+                                 else f"Monitoreando · {code}")
         elif mode == "calibrating":
             status_dot.bgcolor, status_text.value = "#FFAA00", "Calibrando…"
         elif mode == "ready":
@@ -1046,6 +1138,12 @@ def main(page: ft.Page):
 
         btn_start.visible = mode != "monitoring"
         btn_start.disabled = not can_start
+        btn_start.tooltip = (
+            "Introduce el código del participante para poder iniciar"
+            if (study_on and not code and mode != "monitoring")
+            else "Empieza a vigilar tu postura y fatiga")
+        participant_field.visible = study_on and mode != "monitoring"
+        study_bar.visible = study_on and mode == "monitoring"
         # Flet mantiene un bgcolor explícito aunque el botón esté
         # deshabilitado: sin esto, "Iniciar" parecía activo sin calibrar.
         btn_start.bgcolor = "#00BCD4" if can_start else None
@@ -1081,6 +1179,7 @@ def main(page: ft.Page):
     video_container = ft.Container(
         content=ft.Column([
             control_bar,
+            study_bar,
             setup_banner,
             ft.Container(
                 content=video_feed.build(),
@@ -1111,7 +1210,8 @@ def main(page: ft.Page):
     )
 
     sidebar = ft.Container(
-        content=ft.Column([calibration_view.build(),
+        content=ft.Column([participant_field,
+                           calibration_view.build(),
                            telemetry_panel.build()],
                           scroll=ft.ScrollMode.AUTO, spacing=10),
         expand=2,
