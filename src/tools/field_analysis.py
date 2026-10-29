@@ -56,6 +56,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 FIELD_PHASES = ("linea_base", "intervencion")
 
+# Filas registradas a menos de estos FPS no son mediciones: la cámara estaba
+# compartida con otra app (videollamada) y entregaba ~1 frame/s sin imagen
+# útil (prueba con Google Meet, 2026-10-29). Se descartan como "sin datos";
+# si se contaran, parecerían ausencias de la persona (pausas activas falsas).
+MIN_VALID_FPS = 3.0
+
 
 @dataclass
 class FieldConfig:
@@ -391,8 +397,11 @@ def collect_field_data(sessions: Sequence[dict],
             continue
         pd = out.setdefault(ses["participante"],
                             ParticipantData(ses["participante"]))
-        durs = row_durations(ses["rows"], cfg.max_gap_sec)
-        for r, d in zip(ses["rows"], durs):
+        rows = [r for r in ses["rows"]
+                if r.get("fps") is None or r["fps"] == 0
+                or r["fps"] >= MIN_VALID_FPS]
+        durs = row_durations(rows, cfg.max_gap_sec)
+        for r, d in zip(rows, durs):
             r = dict(r)
             r["_phase"], r["_dur"] = phase, d
             pd.rows.append(r)

@@ -80,7 +80,8 @@ class TrayIcon:
                  on_recalibrate: Optional[Callable[[], None]] = None,
                  on_quit: Optional[Callable[[], None]] = None,
                  title: str = "Monitor Postural y Fatiga",
-                 can_pause: Optional[Callable[[], bool]] = None):
+                 can_pause: Optional[Callable[[], bool]] = None,
+                 on_yield_camera: Optional[Callable[[], None]] = None):
         """
         Parameters
         ----------
@@ -100,6 +101,7 @@ class TrayIcon:
         self._on_toggle_pause = on_toggle_pause
         self._on_recalibrate = on_recalibrate
         self._on_quit = on_quit
+        self._on_yield_camera = on_yield_camera
         self._can_pause = can_pause
         self._title = title
 
@@ -168,6 +170,11 @@ class TrayIcon:
             pystray.MenuItem("Abrir panel", self._handle_show, default=True),
             pystray.MenuItem(_pause_label, self._handle_toggle_pause,
                              enabled=lambda _item: self.pause_enabled),
+            pystray.MenuItem(
+                "Ceder cámara a una videollamada", self._handle_yield,
+                enabled=lambda _item: (self.pause_enabled
+                                       and not self._paused),
+                visible=self._on_yield_camera is not None),
             pystray.MenuItem("Recalibrar postura y ojos",
                              self._handle_recalibrate),
             pystray.Menu.SEPARATOR,
@@ -188,6 +195,13 @@ class TrayIcon:
     # Handlers del menú. Corren en el hilo de pystray, así que todo lo que
     # toque la UI de Flet debe reenviarse al hilo de Flet desde app_ui.
     # ------------------------------------------------------------------
+
+    def _handle_yield(self, icon=None, item=None) -> None:
+        if self._on_yield_camera:
+            try:
+                self._on_yield_camera()
+            except Exception:
+                logger.exception("Error al ceder la cámara.")
 
     def _handle_show(self, icon=None, item=None) -> None:
         if self._on_show:

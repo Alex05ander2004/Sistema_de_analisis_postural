@@ -667,3 +667,23 @@ class TestFieldExport:
         res = ex.export([tmp_path / "a.db"], tmp_path / "o", field_config)
         assert res["field"]["participants"] == []
         assert not (tmp_path / "o" / "resumen_diario.csv").exists()
+
+
+def test_low_fps_rows_are_not_counted_as_absence(tmp_path, field_config):
+    """Filas a ~1 FPS (cámara compartida con Meet) no son pausas activas."""
+    make_field_db(tmp_path / "a.db", "P01", [
+        {"fecha": "2026-11-02", "fase": "linea_base", "minutos": 30, "dev": 0,
+         "ausencia": (600, 300)}])
+    con = sqlite3.connect(tmp_path / "a.db")
+    t0 = _ts("2026-11-02")
+    con.execute("UPDATE metrics_log SET fps = 25.0")
+    con.execute("UPDATE metrics_log SET fps = 1.0 WHERE timestamp BETWEEN ? AND ?",
+                (t0 + 600, t0 + 900))
+    con.commit()
+    con.close()
+    res = ex.export([tmp_path / "a.db"], tmp_path / "o", field_config,
+                    reports=False)
+    day = res["field"]["days"][0]
+    assert day["pausas"] == 0
+    assert day["minutos"] == pytest.approx(25, abs=0.2)
+

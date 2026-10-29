@@ -58,7 +58,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.capture.video_thread import VideoThread
-from src.capture.camera_source import resolve_camera_source
+from src.capture.camera_source import backend_api, resolve_camera_source
 from src.capture.camera_usage import others_using_camera, own_markers
 from src.vision.pose_estimator import PoseEstimator
 from src.vision.face_estimator import FaceEstimator
@@ -227,6 +227,9 @@ class InferenceThread(threading.Thread):
         self._ui_visible = threading.Event()
         self._ui_visible.set()
         self._paused = threading.Event()
+        # Cesión temporal de la cámara a una videollamada (ver yield_camera)
+        self._yield_until = 0.0
+        self._yield_timer: threading.Timer | None = None
         if start_mode not in ("monitoring", "preview"):
             raise ValueError("start_mode debe ser 'monitoring' o 'preview'")
         self._mode = start_mode
@@ -441,6 +444,56 @@ class InferenceThread(threading.Thread):
                 logger.exception("No se pudo reanudar la captura.")
             self._paused.clear()
             logger.info("Monitoreo reanudado.")
+
+    # ------------------------------------------------------------------
+    # Ceder la cámara a una videollamada
+    # ------------------------------------------------------------------
+
+    @property
+    def yielding(self) -> bool:
+        return self._yield_until > 0.0
+
+    @property
+    def yield_remaining(self) -> float:
+        return max(0.0, self._yield_until - time.monotonic())
+
+    def yield_camera(self, seconds: float = 20.0) -> None:
+        """
+        Suelta la cámara `seconds` segundos y la vuelve a abrir sola.
+
+        Prueba del 2026-10-29 con Google Meet: si la app abre la cámara
+        PRIMERO, Meet no recibe imagen ("otra aplicación la está usando"),
+        tanto con MSMF como con DirectShow. Cediéndola, Meet la toma. Al
+        reabrir, la app solo recibe ~1 frame/s inútil mientras dure la
+        llamada: VideoThread lo detecta (STATUS_SHARED), no registra nada en
+        ese tiempo y reintenta cada 15 s hasta que Meet la suelta.
+
+        Windows no avisa cuándo otra app quiere la cámara (el registro de uso
+        solo apunta a las apps que LOGRAN abrirla), así que lo pide el
+        usuario: botón «Ceder cámara» o menú de la bandeja.
+        """
+        self.cancel_yield()
+        self._yield_until = time.monotonic() + seconds
+        self.set_paused(True)
+        self._yield_timer = threading.Timer(seconds, self._end_yield)
+        self._yield_timer.daemon = True
+        self._yield_timer.start()
+        logger.info("Cámara cedida %.0f s a otra aplicación.", seconds)
+
+    def _end_yield(self) -> None:
+        if not self.yielding:
+            return
+        self._yield_until = 0.0
+        self._yield_timer = None
+        logger.info("Fin de la cesión: se vuelve a abrir la cámara.")
+        self.set_paused(False)
+
+    def cancel_yield(self) -> None:
+        """Anula una cesión en curso (el usuario pausó o reanudó a mano)."""
+        if self._yield_timer is not None:
+            self._yield_timer.cancel()
+        self._yield_timer = None
+        self._yield_until = 0.0
 
     # ------------------------------------------------------------------
     # Modos: calibración guiada e inicio del seguimiento
@@ -1024,6 +1077,7 @@ class InferenceThread(threading.Thread):
         logger.info("Recalibración solicitada por el usuario.")
 
     def stop(self):
+        self.cancel_yield()
         self._stop_event.set()
 
 
@@ -1113,7 +1167,8 @@ def main(page: ft.Page):
     state_queue: Queue = Queue(maxsize=1)
 
     source_index = cam_cfg.get("source_index", -1)
-    camera_source = resolve_camera_source(source_index)
+    cam_api = backend_api(cam_cfg.get("backend", "auto"))
+    camera_source = resolve_camera_source(source_index, api=cam_api)
 
     vt = VideoThread(
         source=camera_source,
@@ -1122,8 +1177,10 @@ def main(page: ft.Page):
         target_fps=cam_cfg.get("target_fps", 30),
         # Con autodetección, al perder la cámara se vuelve a buscar cuál da
         # imagen real (ver VideoThread.source_resolver).
-        source_resolver=((lambda: resolve_camera_source(-1, verbose=False))
+        source_resolver=((lambda: resolve_camera_source(-1, verbose=False,
+                                                        api=cam_api))
                          if source_index == -1 else None),
+        api_preference=cam_api,
     )
     inference_thread = InferenceThread(
         video_thread=vt,
@@ -1191,8 +1248,13 @@ def main(page: ft.Page):
     def _on_start_click(_):
         inference_thread.request_start()
 
+    def _on_yield_click(_):
+        inference_thread.yield_camera(yield_seconds)
+        _refresh_controls(force=True)
+
     def _on_pause_click(_):
         paused = not inference_thread.is_paused
+        inference_thread.cancel_yield()
         _yield["auto"] = False          # el usuario manda sobre la cesión
         inference_thread.set_paused(paused)
         if tray is not None:
@@ -1214,10 +1276,16 @@ def main(page: ft.Page):
         visible=False,
         tooltip="Detiene la cámara (el piloto se apaga) sin perder la calibración",
     )
+    yield_seconds = float(cam_cfg.get("yield_seconds", 20))
+    btn_yield = ft.OutlinedButton(
+        "Ceder cámara", icon=ft.icons.VIDEO_CALL, on_click=_on_yield_click,
+        visible=False,
+        tooltip=("Si Meet, Teams o Zoom dicen que la cámara está en uso: la "
+                 "app la suelta y vuelve a medir sola al terminar la llamada"))
     control_bar = ft.Container(
         content=ft.Row([
             status_dot, status_text, ft.Container(expand=True),
-            btn_calibrate, btn_start, btn_pause,
+            btn_calibrate, btn_start, btn_yield, btn_pause,
         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor="#16162A",
         border=ft.border.all(1, "#2A2A4A"),
@@ -1297,7 +1365,10 @@ def main(page: ft.Page):
             return False
         _ui["signature"] = signature
 
-        if mode == "monitoring" and paused:
+        if mode == "monitoring" and paused and inference_thread.yielding:
+            status_dot.bgcolor = "#FFAA00"
+            status_text.value = "Cámara cedida a la videollamada"
+        elif mode == "monitoring" and paused:
             status_dot.bgcolor, status_text.value = "#FFAA00", "En pausa — cámara apagada"
         elif mode == "monitoring":
             status_dot.bgcolor = "#00C853"
@@ -1365,6 +1436,7 @@ def main(page: ft.Page):
             video_feed.show_paused()
 
         btn_pause.visible = mode == "monitoring"
+        btn_yield.visible = mode == "monitoring" and not paused
         btn_pause.text = "Reanudar" if paused else "Pausar"
         btn_pause.icon = ft.icons.PLAY_ARROW if paused else ft.icons.PAUSE
 
@@ -1710,7 +1782,12 @@ def main(page: ft.Page):
         avisa una vez desde la bandeja: con la ventana oculta, el participante
         no sabría que ha dejado de medirse.
         """
-        if inference_thread.is_paused and _yield["auto"]:
+        if inference_thread.is_paused and inference_thread.yielding:
+            cam_msg = (f"Cámara cedida: tienes "
+                       f"{inference_thread.yield_remaining:.0f} s para encenderla "
+                       "en tu videollamada. La app volverá a medir sola cuando "
+                       "termine la llamada.")
+        elif inference_thread.is_paused and _yield["auto"]:
             cam_msg = (f"En pausa: {', '.join(_yield['apps'])} está usando la "
                        "cámara. El seguimiento se reanudará solo al terminar.")
         else:
@@ -1718,7 +1795,8 @@ def main(page: ft.Page):
         msg = cam_msg or _ui.get("setup_hint", "")
         now = time.monotonic()
         if (cam_msg and inference_thread.mode == "monitoring"
-                and not inference_thread.is_paused):
+                and not inference_thread.is_paused
+                and vt.status != "shared"):
             if _cam["lost_since"] is None:
                 _cam["lost_since"] = now
             elif (not _cam["notified"] and tray is not None
@@ -1836,7 +1914,11 @@ def main(page: ft.Page):
         inference_thread.set_ui_visible(False)
         logger.info("Ventana oculta; el monitoreo continúa en segundo plano.")
 
+    def _on_tray_yield():
+        inference_thread.yield_camera(yield_seconds)
+
     def _on_tray_pause(paused: bool):
+        inference_thread.cancel_yield()
         _yield["auto"] = False
         inference_thread.set_paused(paused)
 
@@ -1913,6 +1995,7 @@ def main(page: ft.Page):
         on_toggle_pause=_on_tray_pause,
         on_recalibrate=_on_tray_recalibrate,
         on_quit=_on_tray_quit,
+        on_yield_camera=_on_tray_yield,
         can_pause=lambda: inference_thread.mode == "monitoring",
     ) if background_enabled else None
 

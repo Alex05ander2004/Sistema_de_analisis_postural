@@ -49,6 +49,7 @@ STATUS_OK = "ok"
 STATUS_RECONNECTING = "reconnecting"
 STATUS_UNAVAILABLE = "unavailable"
 STATUS_NO_IMAGE = "no_image"
+STATUS_SHARED = "shared"
 
 STATUS_MESSAGES = {
     STATUS_RECONNECTING: ("La cámara dejó de responder (¿la está usando otra "
@@ -57,6 +58,8 @@ STATUS_MESSAGES = {
                          "aplicación?). Se reintentará sola."),
     STATUS_NO_IMAGE: ("La cámara no entrega imagen (¿está tapada o la usa otra "
                       "aplicación?). No se está midiendo."),
+    STATUS_SHARED: ("Otra aplicación está usando la cámara (¿videollamada?). "
+                    "No se está midiendo; se reanudará sola al terminar."),
 }
 
 # Desviación típica por debajo de la cual un frame se considera negro (la
@@ -86,7 +89,11 @@ class VideoThread:
                  max_backoff_sec: float = 15.0,
                  black_after_sec: float = 3.0,
                  capture_factory=None,
-                 source_resolver=None):
+                 source_resolver=None,
+                 api_preference: int = cv2.CAP_ANY,
+                 min_fps: float = 3.0,
+                 low_fps_after_sec: float = 3.0,
+                 shared_reopen_sec: float = 15.0):
         """
         Parameters
         ----------
@@ -102,6 +109,15 @@ class VideoThread:
             Espera máxima entre intentos de apertura.
         black_after_sec:
             Segundos de frames negros seguidos para dejar de entregarlos.
+        min_fps, low_fps_after_sec, shared_reopen_sec:
+            Cámara COMPARTIDA con otra app. Prueba del 2026-10-29: con Google
+            Meet usando la cámara, la app la abría "bien" pero recibía ~1
+            frame/s sin nadie detectable, y esas filas se registraban como
+            persona AUSENTE (en el análisis habrían contado como pausas
+            activas inexistentes). Por debajo de `min_fps` durante
+            `low_fps_after_sec` los frames dejan de entregarse (hueco sin
+            datos, no ausencia) y cada `shared_reopen_sec` se reabre por si la
+            otra app ya la soltó.
         capture_factory:
             Inyectable para pruebas; por defecto cv2.VideoCapture.
         source_resolver:
@@ -124,7 +140,13 @@ class VideoThread:
         self.reopen_after_sec = reopen_after_sec
         self.max_backoff_sec = max_backoff_sec
         self.black_after_sec = black_after_sec
-        self._capture_factory = capture_factory or cv2.VideoCapture
+        self.min_fps = min_fps
+        self.low_fps_after_sec = low_fps_after_sec
+        self.shared_reopen_sec = shared_reopen_sec
+        # api_preference: backend de OpenCV (ver camera_source.backend_api;
+        # con DirectShow la cámara se comparte con las videollamadas).
+        self._capture_factory = capture_factory or (
+            lambda src: cv2.VideoCapture(src, api_preference))
         self._source_resolver = source_resolver
         self._needs_resolve = False
 
@@ -229,9 +251,13 @@ class VideoThread:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_FPS, self.target_fps)
-        logger.debug("Captura iniciada con %dx%d",
-                     int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                     int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        try:
+            backend = cap.getBackendName()
+        except Exception:
+            backend = "?"
+        logger.info("Cámara %s abierta con %s a %dx%d", self.source, backend,
+                    int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
         return cap
 
     def _maybe_resolve_source(self) -> None:
@@ -260,6 +286,11 @@ class VideoThread:
         backoff = 1.0
         fail_since = None       # instante de la primera lectura fallida
         black_since = None      # instante del primer frame negro seguido
+        low_since = None        # instante desde el que los FPS son bajos
+        # Tras reabrir desde STATUS_SHARED no se entrega nada hasta comprobar
+        # un segundo entero a velocidad normal: el primer frame de una cámara
+        # aún compartida parece bueno y volvería a registrar basura.
+        probation = False
         fps_window_start = time.perf_counter()
         fps_window_frames = 0
 
@@ -277,7 +308,9 @@ class VideoThread:
                     # Abrir no basta: con la cámara tomada por otra app el
                     # dispositivo suele abrir y luego no entregar nada. El
                     # estado vuelve a "ok" solo con el primer frame bueno.
-                    fail_since = black_since = None
+                    fail_since = black_since = low_since = None
+                    fps_window_frames = 0
+                    fps_window_start = time.perf_counter()
 
                 ret, frame = cap.read()
                 now = time.perf_counter()
@@ -299,6 +332,37 @@ class VideoThread:
                     self._stop_event.wait(0.05)
                     continue
                 fail_since = None
+
+                self._frame_count += 1
+                fps_window_frames += 1
+                elapsed = now - fps_window_start
+                if elapsed >= 1.0:
+                    self._fps_actual = fps_window_frames / elapsed
+                    fps_window_frames = 0
+                    fps_window_start = now
+                    if self._fps_actual < self.min_fps:
+                        if low_since is None:
+                            low_since = now
+                    else:
+                        low_since = None
+                        probation = False
+
+                # Cámara compartida con otra app: frames escasos e inútiles.
+                if (low_since is not None
+                        and now - low_since >= self.low_fps_after_sec):
+                    self._set_status(STATUS_SHARED)
+                    if now - low_since >= self.shared_reopen_sec:
+                        cap.release()
+                        cap = None
+                        low_since = None
+                        probation = True
+                        fps_window_frames = 0
+                        fps_window_start = time.perf_counter()
+                        self._stop_event.wait(1.0)
+                    continue
+
+                if probation:
+                    continue
 
                 # Frames negros sostenidos: no se entregan (ver docstring)
                 # y, si persisten, se reabre por si el dispositivo se liberó.
@@ -322,16 +386,6 @@ class VideoThread:
                             self._reconnects += 1
                         self._set_status(STATUS_OK)
                         backoff = 1.0
-
-                self._frame_count += 1
-                fps_window_frames += 1
-
-                # Actualizar FPS cada segundo
-                elapsed = now - fps_window_start
-                if elapsed >= 1.0:
-                    self._fps_actual = fps_window_frames / elapsed
-                    fps_window_frames = 0
-                    fps_window_start = now
 
                 # Política drop-oldest: si queue llena, sacar el frame viejo
                 if self._queue.full():

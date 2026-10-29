@@ -24,11 +24,30 @@ Autor: Tesis Huisa Perez, UNSA 2026
 """
 
 import logging
+import sys
 from typing import Optional
 
 import cv2
 
 logger = logging.getLogger(__name__)
+
+# Backend de captura. Prueba del 2026-10-29 en el equipo de la tesis:
+#
+#   la app abre con      otra app que lee con MSMF (Meet/Teams/Zoom)
+#   MSMF (por defecto)   0 imágenes: "la cámara está en uso"
+#   DirectShow           recibe imagen, y la app sigue midiendo sin fallos
+#
+# Con DirectShow la cámara se COMPARTE: el participante puede hacer
+# videollamadas sin pausar la app. Los índices pueden diferir entre backends,
+# así que la autodetección y la captura deben usar el mismo.
+BACKENDS = {"dshow": cv2.CAP_DSHOW, "msmf": cv2.CAP_MSMF, "any": cv2.CAP_ANY}
+
+
+def backend_api(name: Optional[str]) -> int:
+    """Constante de OpenCV para el backend configurado (camera.backend)."""
+    if not name or name == "auto":
+        return cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+    return BACKENDS.get(str(name).lower(), cv2.CAP_ANY)
 
 # Desviación típica mínima de un frame para considerarlo "imagen real".
 # Un frame completamente negro tiene std ≈ 0; incluso una escena muy oscura
@@ -42,7 +61,8 @@ DEFAULT_MAX_INDEX = 4
 
 def detect_camera_source(max_index: int = DEFAULT_MAX_INDEX,
                          black_std_threshold: float = DEFAULT_BLACK_STD_THRESHOLD,
-                         verbose: bool = True) -> int:
+                         verbose: bool = True,
+                         api: int = cv2.CAP_ANY) -> int:
     """
     Devuelve el primer índice de cámara que entrega una imagen real.
 
@@ -68,7 +88,7 @@ def detect_camera_source(max_index: int = DEFAULT_MAX_INDEX,
         siga y falle de forma visible más adelante en vez de aquí).
     """
     for idx in range(max_index):
-        cap = cv2.VideoCapture(idx)
+        cap = cv2.VideoCapture(idx, api)
         if not cap.isOpened():
             cap.release()
             continue
@@ -92,7 +112,8 @@ def detect_camera_source(max_index: int = DEFAULT_MAX_INDEX,
 
 
 def resolve_camera_source(configured: Optional[int],
-                          verbose: bool = True) -> int:
+                          verbose: bool = True,
+                          api: int = cv2.CAP_ANY) -> int:
     """
     Traduce el valor de configuración de cámara a un índice concreto.
 
@@ -106,7 +127,7 @@ def resolve_camera_source(configured: Optional[int],
     y otra se quede clavada en el índice 0.
     """
     if configured is None or configured < 0:
-        return detect_camera_source(verbose=verbose)
+        return detect_camera_source(verbose=verbose, api=api)
     if verbose:
         logger.info("Usando índice de cámara forzado: %d", configured)
     return configured

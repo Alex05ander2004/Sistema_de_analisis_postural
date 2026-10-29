@@ -142,8 +142,12 @@ Bostezos y cierres de ojos son **simulados**: decláralo como limitación.
    seguimiento**. Se calibra cada día porque la silla, la luz y la posición de la
    cámara cambian.
 3. Cerrar la ventana: la app sigue en segundo plano (icono junto al reloj).
-   **Pausar** si hay una videollamada que necesite la cámara o si no quiere ser
-   medido en ese momento.
+   **Pausar** si no quiere ser medido en ese momento.
+   **Videollamadas:** si Meet, Teams o Zoom dicen *"la cámara está en uso"*,
+   pulsar **Ceder cámara** (en la ventana, o clic derecho en el icono junto al
+   reloj) y, en los 20 s siguientes, volver a encender la cámara en la
+   llamada. La app no mide durante la llamada y **vuelve a medir sola** al
+   terminarla. No hace falta hacer nada más.
 4. Al terminar la jornada: **Salir** desde el icono de la bandeja. La app
    pregunta **tres cosas en 10 segundos**: dolor de cuello u hombros, cansancio
    visual y somnolencia (0–10). Si se apagó el equipo sin salir, la pregunta
@@ -247,7 +251,8 @@ sesión tiene un identificador único.
 |---|---|---|
 | La cámara no se recuperaba nunca tras una videollamada o una suspensión (y el log crecía ~100 líneas/s) | Reconexión con espera creciente, aviso en la ventana y en la bandeja tras 5 min | 9 pruebas con cámara simulada |
 | Si la app arrancaba con la cámara real ocupada, se quedaba para siempre en la cámara IR (negra) | Al perder la cámara se vuelve a autodetectar | Reproducido con el `.exe` real y corregido |
-| **La app deja NEGRA la cámara de otras apps** (0 de 100 lecturas con imagen en la prueba) | La app cede la cámara: se pausa sola si otra app la usa y se reanuda al terminar | Lectura del registro probada; **falta verificarlo con una llamada real (abajo)** |
+| **La app deja la cámara "en uso" para Meet/Teams/Zoom** | Detectarlo solo no es posible (Windows únicamente registra a la app que LOGRA abrir la cámara) y compartirla tampoco funcionó con Meet real. Solución: botón **Ceder cámara** (ventana y bandeja) | Probado con Google Meet el 2026-10-29: Meet toma la cámara tras ceder |
+| Con Meet usando la cámara, la app recibía ~1 frame/s sin imagen útil y **lo registraba como persona ausente** (pausas activas falsas) | La app lo detecta (< 3 FPS), no registra nada durante la llamada y reintenta cada 15 s; el exportador también descarta filas < 3 FPS | Visto en la base real; 2 pruebas automáticas |
 | No había ejecutable | `packaging/` (PyInstaller), datos en `%LOCALAPPDATA%\MonitorPostural`, log a archivo incluido en el `.zip` | El `.exe` arranca, abre la cámara, calibra y registra |
 | ~1.6 núcleos de CPU durante toda la jornada | Tope de 12 FPS de inferencia (`mediapipe.max_inference_fps`) | Medido con el `.exe`: ~1.1 núcleos (−33 %) |
 
@@ -256,15 +261,14 @@ sesión tiene un identificador único.
 - [ ] **1. Umbral de cabeza adelantada (D.3)**, §3 paso 1. Sigue siendo lo más
   importante.
 
-- [ ] **2. Ceder la cámara a una videollamada.** Con la app monitoreando:
-  1. Abre Teams, Zoom o Meet y enciende la cámara.
-  2. En una terminal: `python -m src.capture.camera_usage`. Debe decir
-     *"Otras apps usando la cámara: Teams"* (o Zoom…).
-  3. En ≤ 3 s la app debe pasar a *"En pausa: Teams está usando la cámara"* y
-     tu cámara debe verse bien en la llamada.
-  4. Apaga la cámara de la llamada: la app debe reanudarse sola.
-  Si en el paso 2 no aparece la app de la llamada, **avísame**: el método de
-  detección no funciona en tu Windows y hay que buscar otro.
+- [x] ~~2a. Meet obtiene la cámara tras **Ceder cámara**~~ (2026-10-29: sí).
+- [ ] **2b. La app vuelve a medir sola al terminar la llamada.** Con la app
+  monitoreando: Ceder cámara → encenderla en Meet → durante la llamada la app
+  debe decir *"Otra aplicación está usando la cámara…"* → salir de la
+  llamada → en ≤ 20 s la app debe volver a mostrar imagen y medir (en el log:
+  `Cámara: shared → ok`).
+- [ ] **2c. Teams y Zoom de escritorio:** repetir 2a/2b (pueden comportarse
+  distinto que Meet en el navegador).
 
 - [ ] **3. Suspender y volver.** Con la app monitoreando, cierra la tapa del
   portátil 2 minutos y ábrela. La app debe volver a medir sola (en el log:

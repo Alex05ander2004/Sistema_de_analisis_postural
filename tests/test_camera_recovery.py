@@ -64,8 +64,8 @@ class _Handle:
         return 0
 
     def read(self):
-        time.sleep(0.005)
         mode = self.cam.mode
+        time.sleep(0.5 if mode == "slow" else 0.005)
         if mode == "fail":
             return False, None
         return True, (BLACK if mode == "black" else REAL).copy()
@@ -268,6 +268,32 @@ class TestRecovery:
         finally:
             vt.stop()
 
+    def test_shared_camera_is_a_gap_not_an_absence(self):
+        """
+        Caso real (2026-10-29): con Meet usando la cámara, la app recibía
+        ~1 frame/s sin nadie, y esas filas se registraban como persona
+        AUSENTE. Ahora no se entregan (hueco) y se recupera al soltarla.
+        """
+        cam = FakeCamera()
+        vt = _thread(cam, low_fps_after_sec=1.0, shared_reopen_sec=2.0).start()
+        try:
+            assert _drain(vt)
+            cam.mode = "slow"                       # ~2 frames/s
+            assert _wait(lambda: vt.status == vtm.STATUS_SHARED, timeout=8)
+            assert "videollamada" in vt.status_message
+            while vt.get_frame(timeout=0.05) is not None:
+                pass
+            # Ni siquiera tras reabrir (periodo de prueba) se entrega basura
+            opens = cam.opens
+            assert _wait(lambda: cam.opens > opens, timeout=8)
+            got = sum(vt.get_frame(timeout=0.2) is not None for _ in range(10))
+            assert got == 0, "durante la llamada no debe entregar frames"
+            cam.mode = "ok"                         # termina la llamada
+            assert _wait(lambda: vt.status == vtm.STATUS_OK, timeout=10)
+            assert _drain(vt)
+        finally:
+            vt.stop()
+
     def test_stop_is_prompt_while_retrying(self):
         cam = FakeCamera()
         cam.fail_open = 10_000
@@ -289,3 +315,67 @@ class TestRecovery:
             assert vt.reconnects == 0
         finally:
             vt.stop()
+
+
+class TestYieldCamera:
+    """«Ceder cámara»: soltarla unos segundos para la videollamada."""
+
+    def _thread(self, tmp_path):
+        from queue import Queue
+        import src.ui.app_ui as app_ui
+        from tests.test_integration_pipeline import (
+            _FakeFaceEstimator, _FakePoseEstimator, _FakeVideoThread,
+            _thresholds, NEUTRAL)
+
+        class VT(_FakeVideoThread):
+            def __init__(self):
+                super().__init__()
+                self.starts = self.stops = 0
+
+            def start(self):
+                self.starts += 1
+                return self
+
+            def stop(self):
+                self.stops += 1
+
+        orig = app_ui.PoseEstimator, app_ui.FaceEstimator
+        app_ui.PoseEstimator = lambda **kw: _FakePoseEstimator(NEUTRAL)
+        app_ui.FaceEstimator = lambda **kw: _FakeFaceEstimator(NEUTRAL)
+        app_ui.PoseEstimator.REQUIRED_LANDMARKS = orig[0].REQUIRED_LANDMARKS
+        app_ui.FaceEstimator.LEFT_EYE_EAR_INDICES = orig[1].LEFT_EYE_EAR_INDICES
+        app_ui.FaceEstimator.RIGHT_EYE_EAR_INDICES = orig[1].RIGHT_EYE_EAR_INDICES
+
+        class _Feed:
+            def encode(self, frame, fps=0.0):
+                return "b64"
+        vt = VT()
+        t = app_ui.InferenceThread(
+            video_thread=vt, thresholds=_thresholds(tmp_path / "t.db"),
+            state_queue=Queue(1), on_alert=lambda e: None,
+            video_feed=_Feed(), start_mode="monitoring")
+
+        def restore():
+            app_ui.PoseEstimator, app_ui.FaceEstimator = orig
+        return t, vt, restore
+
+    def test_releases_and_reopens_by_itself(self, tmp_path):
+        t, vt, restore = self._thread(tmp_path)
+        try:
+            t.yield_camera(0.3)
+            assert t.is_paused and t.yielding and vt.stops == 1
+            assert _wait(lambda: not t.is_paused, timeout=3.0)
+            assert not t.yielding and vt.starts == 1
+        finally:
+            restore()
+
+    def test_manual_pause_cancels_the_automatic_reopen(self, tmp_path):
+        """Si el usuario pausa a mano, la cámara NO se reabre sola."""
+        t, vt, restore = self._thread(tmp_path)
+        try:
+            t.yield_camera(0.3)
+            t.cancel_yield()                 # lo que hace el botón Pausar
+            time.sleep(0.6)
+            assert t.is_paused and not t.yielding and vt.starts == 0
+        finally:
+            restore()
