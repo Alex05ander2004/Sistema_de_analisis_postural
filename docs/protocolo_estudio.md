@@ -262,7 +262,10 @@ sesión tiene un identificador único.
   importante.
 
 - [x] ~~2a. Meet obtiene la cámara tras **Ceder cámara**~~ (2026-10-29: sí).
-- [ ] **2b. La app vuelve a medir sola al terminar la llamada.** Con la app
+- [x] **2b. La app vuelve a medir sola al terminar la llamada** (2026-10-29,
+  Meet, llamada de 2.5 min: detectó la cámara compartida en 4 s, reintentó cada
+  ~18 s sin cortar la llamada, no registró filas durante la llamada y volvió a
+  medir 2 s después de salir de Meet). Procedimiento usado: con la app
   monitoreando: Ceder cámara → encenderla en Meet → durante la llamada la app
   debe decir *"Otra aplicación está usando la cámara…"* → salir de la
   llamada → en ≤ 20 s la app debe volver a mostrar imagen y medir (en el log:
