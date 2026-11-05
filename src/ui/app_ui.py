@@ -82,6 +82,7 @@ from src.study.field_study import (
     decide_phase, normalize_code, pending_report_date, today_iso,
 )
 from src.study.data_bundle import create_bundle
+from src.study.personal_history import daily_history, week_comparison
 from src.tools.calibrar_fov import corrected_hfov
 from src.version import APP_VERSION, config_hash
 from src.paths import data_dir, data_file, resource_root, setup_file_logging
@@ -1603,7 +1604,170 @@ def main(page: ft.Page):
         icon=ft.icons.SETTINGS_OUTLINED, icon_size=18,
         on_click=_on_study_click, visible=study_on,
         tooltip="Configuración del estudio (investigador)")
-    header_actions.controls = [btn_export, btn_study]
+
+    # --- Mi historial (OE 1.3.2.5) -----------------------------------------
+    def _history_locked() -> str:
+        """
+        En la línea base del estudio de campo el historial no se muestra:
+        ver su % de buena postura sería ya una retroalimentación, y la línea
+        base debe medir la conducta SIN el sistema. Devuelve el motivo, o ""
+        si se puede mostrar.
+        """
+        if not (study_on and inference_thread.study_mode == MODE_FIELD):
+            return ""
+        try:
+            minutes = inference_thread.history.field_minutes_by_date(
+                inference_thread.participant)
+            phase, _, done = decide_phase(
+                minutes, today_iso(),
+                baseline_days=int(field_cfg.get("baseline_days", 5)),
+                min_minutes=float(field_cfg.get("baseline_min_minutes", 60)))
+        except Exception:
+            logger.exception("No se pudo decidir la fase para el historial.")
+            return ""
+        if phase != PHASE_BASELINE:
+            return ""
+        faltan = max(1, int(field_cfg.get("baseline_days", 5)) - done)
+        return ("Durante los primeros días del estudio la app solo mide. Tu "
+                "historial y los avisos se activarán cuando completes "
+                f"{faltan} día(s) más de uso.")
+
+    def _fmt(v, nd=0, suf=""):
+        return "—" if v is None else f"{v:.{nd}f}{suf}"
+
+    def _history_content(rows) -> ft.Control:
+        if not rows:
+            return ft.Text("Aún no hay días registrados. El historial se llena "
+                           "a medida que usas el seguimiento.",
+                           size=13, color=ft.colors.WHITE70)
+        hoy = rows[0]
+
+        def _card(titulo, valor, nota=""):
+            return ft.Container(
+                content=ft.Column([
+                    ft.Text(titulo, size=10, color=ft.colors.WHITE54),
+                    ft.Text(valor, size=20, weight=ft.FontWeight.BOLD,
+                            color=ft.colors.WHITE),
+                    ft.Text(nota, size=10, color=ft.colors.WHITE38),
+                ], spacing=2),
+                bgcolor="#16162A", border_radius=8, expand=True,
+                padding=ft.padding.symmetric(vertical=8, horizontal=12))
+
+        es_hoy = hoy["fecha"] == today_iso()
+        cards = ft.Row([
+            _card("Buena postura" + (" hoy" if es_hoy else f" ({hoy['fecha']})"),
+                  _fmt(hoy["pct_buena_postura"], 0, " %"),
+                  "del tiempo medido"),
+            _card("Tiempo medido", _fmt(hoy["minutos"] / 60.0, 1, " h")),
+            _card("Pausas activas", _fmt(hoy["pausas_por_hora"], 1, "/h"),
+                  "tramo máx. " + _fmt(hoy["tramo_max_sin_pausa_min"]) + " min"),
+            _card("Avisos", str(hoy["avisos"]),
+                  str(hoy["avisos_inactividad"]) + " de pausa"),
+        ], spacing=8)
+
+        # Barras de % de buena postura por día (más antiguo a la izquierda).
+        bars = []
+        for r in reversed(rows):
+            p = r["pct_buena_postura"]
+            h = 0 if p is None else max(2, int(p * 1.2))
+            color = ("#00C853" if p is not None and p >= 80 else
+                     "#FFAA00" if p is not None and p >= 60 else "#FF4444")
+            bars.append(ft.Column([
+                ft.Text(_fmt(p), size=9, color=ft.colors.WHITE54),
+                ft.Container(width=22, height=h, bgcolor=color,
+                             border_radius=3,
+                             tooltip=(r["fecha"] + ": " + _fmt(p)
+                                      + " % buena postura, "
+                                      + _fmt(r["minutos"]) + " min")),
+                ft.Text(r["fecha"][8:10] + "/" + r["fecha"][5:7], size=9,
+                        color=ft.colors.WHITE38),
+            ], spacing=2, alignment=ft.MainAxisAlignment.END,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER))
+        chart = ft.Container(
+            content=ft.Row(bars, spacing=6,
+                           vertical_alignment=ft.CrossAxisAlignment.END,
+                           scroll=ft.ScrollMode.AUTO),
+            height=170, padding=ft.padding.only(top=8))
+
+        cmp_ = week_comparison(rows)
+        if cmp_ is None:
+            cmp_txt = "Con más días de uso verás cómo evolucionas."
+        else:
+            signo = "mejor" if cmp_["cambio"] >= 0 else "peor"
+            cmp_txt = (f"Últimos 7 días con uso: {cmp_['reciente']:.0f} % de "
+                       f"buena postura, {abs(cmp_['cambio']):.0f} puntos "
+                       f"{signo} que los días anteriores.")
+
+        table = ft.DataTable(
+            columns=[ft.DataColumn(ft.Text(t, size=11)) for t in (
+                "Día", "Horas", "Buena postura", "Pausas/h",
+                "Máx. sin levantarte", "Avisos")],
+            rows=[ft.DataRow(cells=[ft.DataCell(ft.Text(v, size=11)) for v in (
+                r["fecha"], _fmt(r["minutos"] / 60.0, 1),
+                _fmt(r["pct_buena_postura"], 0, " %"),
+                _fmt(r["pausas_por_hora"], 1),
+                _fmt(r["tramo_max_sin_pausa_min"], 0, " min"),
+                str(r["avisos"]))]) for r in rows],
+            heading_row_height=32, data_row_min_height=28,
+            data_row_max_height=28, column_spacing=18)
+
+        limite = post_cfg.get("cervical_deviation_max_deg", 15)
+        return ft.Column([
+            cards,
+            ft.Text("% del tiempo en buena postura por día", size=11,
+                    color=ft.colors.WHITE54),
+            chart,
+            ft.Text(cmp_txt, size=12, color=ft.colors.WHITE70),
+            table,
+            ft.Text(f"«Buena postura» = la cabeza a menos de {limite:.0f}° de "
+                    "tu postura neutra calibrada. Es una guía para ti, no un "
+                    "diagnóstico médico.", size=10, color=ft.colors.WHITE38,
+                    italic=True),
+        ], spacing=10, scroll=ft.ScrollMode.AUTO)
+
+    history_body = ft.Container(width=720, height=520)
+    history_dialog = ft.AlertDialog(
+        modal=False,
+        title=ft.Row([ft.Icon(ft.icons.INSIGHTS, color="#00BCD4"),
+                      ft.Text("Mi historial · últimos 14 días")], spacing=8),
+        content=history_body,
+        actions=[ft.TextButton("Cerrar",
+                               on_click=lambda _: page.close(history_dialog))],
+    )
+
+    def _on_history_click(_):
+        motivo = _history_locked()
+        if motivo:
+            history_body.content = ft.Text(motivo, size=13,
+                                           color=ft.colors.WHITE70)
+            history_body.height = 80
+            page.open(history_dialog)
+            return
+        history_body.height = 520
+        history_body.content = ft.Row([ft.ProgressRing(), ft.Text(
+            "Calculando…", size=13)], spacing=10)
+        page.open(history_dialog)
+
+        def _work():
+            try:
+                code = (inference_thread.participant
+                        if study_on and inference_thread.study_mode == MODE_FIELD
+                        else None)
+                rows = daily_history(inference_thread.history, thresholds,
+                                     days=14, participant_code=code or None)
+                history_body.content = _history_content(rows)
+            except Exception:
+                logger.exception("No se pudo calcular el historial.")
+                history_body.content = ft.Text(
+                    "No se pudo cargar el historial.", color="#FF6B6B")
+            page.update()
+
+        threading.Thread(target=_work, name="historial", daemon=True).start()
+
+    btn_history = ft.TextButton(
+        "Mi historial", icon=ft.icons.INSIGHTS, on_click=_on_history_click,
+        tooltip="Tu postura y tus pausas de los últimos 14 días")
+    header_actions.controls = [btn_history, btn_export, btn_study]
 
     # --- Autorreporte diario ----------------------------------------------
     _SURVEY_ITEMS = (

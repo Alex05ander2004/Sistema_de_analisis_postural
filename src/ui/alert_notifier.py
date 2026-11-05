@@ -52,6 +52,7 @@ _ALERT_COLORS = {
     "eye_fatigue":       {"bg": "#9B59B6", "icon": "👁️", "label": "FATIGA OCULAR"},
     "yawn":              {"bg": "#3498DB", "icon": "😴", "label": "BOSTEZO"},
     "drowsiness":        {"bg": "#8E44AD", "icon": "💤", "label": "SOMNOLENCIA (PERCLOS)"},
+    "sedentary":         {"bg": "#16A085", "icon": "🚶", "label": "PAUSA ACTIVA"},
 }
 
 _PAUSE_INSTRUCTIONS = {
@@ -82,6 +83,11 @@ _PAUSE_INSTRUCTIONS = {
         "Interrumpe la tarea: levántate y camina 5 minutos.",
         "Ventila el ambiente y toma agua.",
         "Si la somnolencia persiste, evita tareas que requieran atención sostenida.",
+    ],
+    "sedentary": [
+        "Ponte de pie y camina 2–3 minutos.",
+        "Estira cuello, hombros y espalda: retracción cervical y escapular.",
+        "Aprovecha para mirar a lo lejos y tomar agua.",
     ],
 }
 

@@ -137,6 +137,7 @@ _TOAST_TITLES = {
     "eye_fatigue":        "Fatiga ocular",
     "yawn":               "Signos de cansancio",
     "drowsiness":         "Somnolencia detectada",
+    "sedentary":          "Hora de una pausa activa",
 }
 
 # Una sola acción concreta por alerta. La lista completa de pausa activa vive
@@ -147,6 +148,7 @@ _TOAST_ACTIONS = {
     "eye_fatigue":        "Regla 20-20-20: mira a 6 m durante 20 s.",
     "yawn":               "Levántate y camina un par de minutos.",
     "drowsiness":         "Interrumpe la tarea y descansa.",
+    "sedentary":          "Ponte de pie y camina un par de minutos.",
 }
 
 

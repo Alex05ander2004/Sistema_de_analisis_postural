@@ -545,6 +545,45 @@ class HistoryLogger:
                 sql, (participant_code, *phases, max_gap_sec)).fetchall()
         return {r[0]: (r[1] or 0.0) / 60.0 for r in rows}
 
+    _HISTORY_COLS = ("session_id", "timestamp", "fps", "face_detected",
+                     "pose_detected", "pose_valid", "cervical_deviation",
+                     "shoulder_asymmetry", "cervical_lateral", "distance_m",
+                     "perclos")
+
+    def rows_since(self, since_ts: float,
+                   participant_code: Optional[str] = None) -> List[dict]:
+        """
+        Filas de metrics_log desde `since_ts` (solo las columnas que usa el
+        historial personal), ordenadas por sesión y hora. Con
+        `participant_code`, solo las sesiones de ese participante.
+        """
+        cols = ", ".join(f"m.{c}" for c in self._HISTORY_COLS)
+        sql = (f"SELECT {cols} FROM metrics_log m "
+               "JOIN sessions s ON s.id = m.session_id WHERE m.timestamp >= ?")
+        args: list = [since_ts]
+        if participant_code:
+            sql += " AND s.participant_code = ?"
+            args.append(participant_code)
+        sql += " ORDER BY m.session_id, m.timestamp"
+        with self._lock:
+            cur = self._conn.execute(sql, args)
+            return [dict(zip(self._HISTORY_COLS, r)) for r in cur.fetchall()]
+
+    def events_since(self, since_ts: float,
+                     participant_code: Optional[str] = None) -> List[dict]:
+        """Eventos desde `since_ts` (tipo, hora y si se mostraron)."""
+        sql = ("SELECT e.timestamp, e.alert_type, e.notified FROM events e "
+               "JOIN sessions s ON s.id = e.session_id WHERE e.timestamp >= ?")
+        args: list = [since_ts]
+        if participant_code:
+            sql += " AND s.participant_code = ?"
+            args.append(participant_code)
+        sql += " ORDER BY e.timestamp"
+        with self._lock:
+            cur = self._conn.execute(sql, args)
+            return [{"timestamp": r[0], "alert_type": r[1], "notified": r[2]}
+                    for r in cur.fetchall()]
+
     def log_self_report(self, participant_code: str, report_date: str,
                         neck_pain: Optional[int], eye_strain: Optional[int],
                         sleepiness: Optional[int], retrospective: bool = False,

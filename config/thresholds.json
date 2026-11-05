@@ -107,6 +107,19 @@
     "_face_draw_mode_comment": "'metrics' dibuja solo los 12 puntos de ojos y 4 de boca que entran en el EAR/MAR (~16 primitivas). 'contours' dibuja los contornos faciales (~130 líneas). 'tesselation' dibuja la malla completa (~2600 segmentos por frame): cuesta más que la propia inferencia de Face Mesh y no aporta ninguna información a las métricas — usar solo para capturas de pantalla del documento."
   },
 
+  "sedentary": {
+    "enabled": true,
+    "alert_after_min": 45,
+    "_alert_after_min_comment": "PROVISIONAL, a confirmar con el especialista. Minutos seguidos frente a la cámara sin una pausa activa antes de avisar. Las recomendaciones para trabajo sedentario de oficina proponen interrumpir el tiempo sentado cada 30-60 min; 45 min es el punto medio. Corresponde al OE 1.3.2.3 (fatiga estática).",
+    "repeat_every_min": 10,
+    "_repeat_every_min_comment": "Si la persona sigue sin levantarse, el aviso se repite cada estos minutos.",
+    "break_min_sec": 60,
+    "_break_min_sec_comment": "Ausencia mínima (ni cuerpo ni cara) que cuenta como pausa activa y reinicia el tramo. Es el mismo criterio que usa el análisis de campo (pausas por hora).",
+    "unknown_gap_sec": 300,
+    "_unknown_gap_sec_comment": "Un hueco sin mediciones mayor que esto (app en pausa, cámara cedida a una videollamada) también reinicia el tramo: no se sabe si la persona se levantó, y nunca se avisa por tiempo que no se midió.",
+    "response_window_min": 10,
+    "_response_window_min_comment": "Solo análisis: plazo tras el aviso dentro del cual una pausa cuenta como respuesta (indicador pct_pausa_tras_aviso_inactividad)."
+  },
   "study": {
     "enabled": true,
     "_enabled_comment": "Modo estudio. Con enabled=true la app pide un CÓDIGO DE PARTICIPANTE antes de poder iniciar el seguimiento (queda guardado en sessions.participant_code) y, durante el seguimiento, muestra un selector de CONDICIÓN del protocolo (cada fila de metrics_log y cada alerta guardan la condición vigente). Sin la condición no se puede calcular la precisión del sistema: no habría forma de saber qué estaba haciendo realmente el participante. Poner false para el uso diario fuera del estudio. Los códigos deben ser seudónimos (P01, P02…), nunca nombres.",

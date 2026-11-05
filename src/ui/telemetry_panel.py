@@ -37,6 +37,7 @@ _ALERT_LABELS = {
     "eye_fatigue":        "Fatiga ocular",
     "yawn":               "Bostezo",
     "drowsiness":         "Somnolencia",
+    "sedentary":          "Sin levantarte",
 }
 
 _ALERT_LOG_COLORS = {
@@ -45,6 +46,7 @@ _ALERT_LOG_COLORS = {
     "eye_fatigue":        "#9B59B6",
     "yawn":               "#3498DB",
     "drowsiness":         "#8E44AD",
+    "sedentary":          "#16A085",
 }
 
 
@@ -357,6 +359,24 @@ class TelemetryPanel:
         self._blink_text = ft.Text("—", size=13, weight=ft.FontWeight.BOLD,
                                    color=ft.colors.WHITE)
 
+        # Inactividad física: tramo sentado en curso frente al aviso.
+        self._sit_text = ft.Text("—", size=13, weight=ft.FontWeight.BOLD,
+                                 color=ft.colors.WHITE)
+        self._sit_hint = ft.Text("", size=10, color=ft.colors.WHITE38)
+        self._sit_row = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.icons.CHAIR_OUTLINED, color=ft.colors.WHITE38, size=14),
+                ft.Text("Sin levantarte", size=11, color=ft.colors.WHITE54),
+                ft.Container(expand=True),
+                self._sit_text,
+                self._sit_hint,
+            ], spacing=6),
+            bgcolor="#16162A",
+            border_radius=8,
+            padding=ft.padding.symmetric(vertical=8, horizontal=14),
+            visible=False,
+        )
+
     def build(self) -> ft.Column:
         """Construye y devuelve el widget del panel."""
         return ft.Column(
@@ -413,6 +433,8 @@ class TelemetryPanel:
 
                 # Temporizadores FSM
                 self._fsm_timer_panel.build(),
+
+                self._sit_row,
 
                 # Encuadre / distancia
                 ft.Container(
@@ -621,3 +643,17 @@ class TelemetryPanel:
 
         if timer_status:
             self._fsm_timer_panel.update(timer_status)
+            self._sync_sitting(timer_status)
+
+    def _sync_sitting(self, timer_status: dict) -> None:
+        enabled = bool(timer_status.get("sedentary_enabled"))
+        self._sit_row.visible = enabled
+        if not enabled:
+            return
+        sit = float(timer_status.get("sitting_min", 0.0) or 0.0)
+        limit = float(timer_status.get("sedentary_alert_min", 45.0) or 45.0)
+        self._sit_text.value = f"{sit:.0f} min"
+        self._sit_text.color = ("#FF4444" if sit >= limit
+                                else "#FFAA00" if sit >= 0.8 * limit
+                                else ft.colors.WHITE)
+        self._sit_hint.value = f"pausa cada {limit:.0f} min"

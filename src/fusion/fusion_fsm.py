@@ -55,6 +55,7 @@ class AlertType(Enum):
     EYE_FATIGUE    = "eye_fatigue"
     YAWN           = "yawn"
     DROWSINESS     = "drowsiness"   # PERCLOS sostenido
+    SEDENTARY      = "sedentary"    # demasiado tiempo sentado sin pausa
 
 
 class FsmState(Enum):
@@ -795,6 +796,20 @@ class FusionFSM:
             "posture_recalibrate_after_absence_sec", 30.0)
         self._pose_last_seen: Optional[float] = None
 
+        # Inactividad física (fatiga estática): tiempo sentado sin pausa.
+        # Mismos criterios que el análisis de campo (field_analysis.py):
+        # una pausa es una ausencia de al menos `break_min_sec`, y un hueco
+        # sin datos mayor que `unknown_gap_sec` (pausa de la app, cámara
+        # cedida a una videollamada) corta el tramo porque no se sabe qué
+        # pasó. Así lo que avisa la app y lo que mide el análisis coinciden.
+        sed = thresholds.get("sedentary", {})
+        self._sed_enabled = bool(sed.get("enabled", False))
+        self._sed_alert_after = 60.0 * float(sed.get("alert_after_min", 45.0))
+        self._sed_repeat = 60.0 * float(sed.get("repeat_every_min", 10.0))
+        self._sed_break_sec = float(sed.get("break_min_sec", 60.0))
+        self._sed_unknown_gap = float(sed.get("unknown_gap_sec", 300.0))
+        self._reset_sedentary()
+
         logger.info(
             "FusionFSM inicializado (θc=%s, ΔE_max=%.1f°, EAR=%s, "
             "PERCLOS=%s, cooldown=%.0fs)",
@@ -950,6 +965,64 @@ class FusionFSM:
         self._last_alert.clear()
         self._face_last_seen = None
         self._pose_last_seen = None
+        # Tras una pausa de la app no se sabe si la persona se levantó: el
+        # tramo sentado vuelve a contarse desde cero (criterio conservador,
+        # nunca se avisa por un tiempo que no se midió).
+        self._reset_sedentary()
+
+    # ------------------------------------------------------------------
+    # Inactividad física
+    # ------------------------------------------------------------------
+
+    def _reset_sedentary(self) -> None:
+        self._sit_start: Optional[float] = None
+        self._sed_last_present: Optional[float] = None
+        self._sed_last_update: Optional[float] = None
+        self._sed_next_due: Optional[float] = None
+
+    def sitting_sec(self, now: Optional[float] = None) -> float:
+        """Segundos del tramo sentado en curso (0 si no hay ninguno)."""
+        if self._sit_start is None:
+            return 0.0
+        if now is None:
+            now = self._clock()
+        return max(0.0, now - self._sit_start)
+
+    def _update_sedentary(self, metrics: SensorMetrics,
+                          now: float) -> Optional[AlertEvent]:
+        if not self._sed_enabled:
+            return None
+        if (self._sed_last_update is not None
+                and now - self._sed_last_update > self._sed_unknown_gap):
+            self._reset_sedentary()
+        self._sed_last_update = now
+
+        if not (metrics.pose_detected or metrics.face_detected):
+            return None      # ausente: el tramo se corta al volver, si dura
+
+        if (self._sed_last_present is not None
+                and now - self._sed_last_present >= self._sed_break_sec):
+            self._sit_start = None          # hubo pausa activa
+        self._sed_last_present = now
+        if self._sit_start is None:
+            self._sit_start = now
+            self._sed_next_due = now + self._sed_alert_after
+            return None
+
+        if now < self._sed_next_due:
+            return None
+        self._sed_next_due = now + self._sed_repeat
+        minutes = (now - self._sit_start) / 60.0
+        return self._try_fire_alert(
+            AlertType.SEDENTARY,
+            metric_value=minutes,
+            threshold=self._sed_alert_after / 60.0,
+            duration_sec=now - self._sit_start,
+            now=now,
+            message=(f"Llevas {minutes:.0f} min sin levantarte "
+                     f"(recomendado: una pausa activa cada "
+                     f"{self._sed_alert_after / 60.0:.0f} min)"),
+        )
 
     # ------------------------------------------------------------------
 
@@ -1107,6 +1180,11 @@ class FusionFSM:
             self._timer_ear.reset()
             self._timer_yawn.reset()
 
+        # --- Inactividad física ------------------------------------------
+        alert = self._update_sedentary(metrics, now)
+        if alert:
+            generated.append(alert)
+
         return generated
 
     # ------------------------------------------------------------------
@@ -1201,6 +1279,10 @@ class FusionFSM:
             "posture_calibration_progress": (
                 round(self._posture_calibrator.progress(now), 2)
                 if self._posture_calibrator is not None else 1.0),
+            # Inactividad física: minutos del tramo sentado en curso.
+            "sedentary_enabled":    self._sed_enabled,
+            "sitting_min":          round(self.sitting_sec(now) / 60.0, 1),
+            "sedentary_alert_min":  round(self._sed_alert_after / 60.0, 1),
         }
 
     def reset_all(self) -> None:
@@ -1219,4 +1301,5 @@ class FusionFSM:
         if self._posture_calibrator is not None:
             self._posture_calibrator.reset()
         self._pose_last_seen = None
+        self._reset_sedentary()
         logger.info("FusionFSM: todos los temporizadores reiniciados.")

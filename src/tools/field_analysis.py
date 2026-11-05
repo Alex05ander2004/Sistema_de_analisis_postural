@@ -25,6 +25,8 @@ cuánta duración. Por día y participante:
                         bostezos detectados.
   Pausas activas        nº de ausencias ≥ 60 s, tiempo ausente, y el tramo
                         más largo sentado sin pausa (inactividad física).
+                        Tras cada alerta de inactividad: si hubo pausa en
+                        los 10 min siguientes y a los cuántos segundos.
   Respuesta             segundos hasta corregir la postura tras cada episodio
                         cervical detectado (con aviso en la intervención,
                         espontánea en la línea base).
@@ -75,6 +77,7 @@ class FieldConfig:
     break_min_sec: float = 60.0          # ausencia mínima para contar pausa
     block_gap_sec: float = 300.0         # pausa breve que no rompe un bloque
     correction_window_sec: float = 30.0
+    sedentary_response_sec: float = 600.0  # plazo para levantarse tras el aviso
     valid_day_min_minutes: float = 120.0
     valid_day_min_block_minutes: float = 60.0
     min_valid_days_baseline: int = 3
@@ -92,6 +95,9 @@ class FieldConfig:
             perclos_threshold=float(fat.get("perclos_threshold", 0.15)),
             min_distance_m=float(cam.get("min_distance_m", 0.50)),
             cervical_window_sec=float(post.get("cervical_alert_window_sec", 5.0)),
+            break_min_sec=float(cfg.get("sedentary", {}).get("break_min_sec", 60.0)),
+            sedentary_response_sec=60.0 * float(
+                cfg.get("sedentary", {}).get("response_window_min", 10.0)),
             valid_day_min_minutes=float(fld.get("valid_day_min_minutes", 120)),
             valid_day_min_block_minutes=float(
                 fld.get("valid_day_min_block_minutes", 60)),
@@ -188,6 +194,40 @@ def correction_after(event_ts: float, limit: float,
         dev = r.get("cervical_deviation")
         if dev is not None and dev <= limit:
             return r["timestamp"] - event_ts
+    return None
+
+
+def break_after(event_ts: float, ts: Sequence[float], rows: Sequence[dict],
+                cfg: "FieldConfig", within_sec: float = 600.0) -> Optional[float]:
+    """
+    Segundos desde event_ts hasta el inicio de la primera pausa activa
+    (ausencia >= cfg.break_min_sec) que empiece dentro de `within_sec`.
+
+    Es la respuesta a la alerta de inactividad: con aviso en la intervención,
+    espontánea en la línea base. Un hueco sin datos mayor que max_gap_sec
+    corta la búsqueda (no se sabe qué pasó) y devuelve None, igual que no
+    haber hecho la pausa a tiempo.
+    """
+    i = bisect_right(ts, event_ts)
+    prev = event_ts
+    run_start, run = None, 0.0
+    for r in rows[i:]:
+        t = r["timestamp"]
+        if t - prev > cfg.max_gap_sec:
+            return None
+        prev = t
+        if _present(r):
+            run_start, run = None, 0.0
+            if t - event_ts > within_sec:
+                return None
+            continue
+        if run_start is None:
+            if t - event_ts > within_sec:
+                return None
+            run_start = t
+        run += r.get("_dur", 1.0)
+        if run >= cfg.break_min_sec:
+            return run_start - event_ts
     return None
 
 
@@ -466,6 +506,10 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
                                  pd.rows, max_gap=cfg.max_gap_sec)
             corr.append(c)
         corr_ok = [c for c in corr if c is not None]
+        sed = [break_after(e["timestamp"], ts_all, pd.rows, cfg,
+                           cfg.sedentary_response_sec)
+               for e in evs if e["alert_type"] == "sedentary"]
+        sed_ok = [s for s in sed if s is not None]
         rep = _latest_report(pd.reports, day)
 
         valid = (ex["minutos"] >= cfg.valid_day_min_minutes
@@ -489,6 +533,7 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
             "alertas_ojo": by_type["eye_fatigue"],
             "alertas_bostezo": by_type["yawn"],
             "alertas_somnolencia": by_type["drowsiness"],
+            "alertas_inactividad": by_type["sedentary"],
             "episodios_cervicales_corregidos": len(corr_ok),
             "episodios_cervicales": len(corr),
             "correccion_mediana_s": median(corr_ok) if corr_ok else None,
@@ -496,6 +541,9 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
                 None if not corr else 100 * sum(
                     1 for c in corr_ok if c <= cfg.correction_window_sec)
                 / len(corr)),
+            "pct_pausa_tras_aviso_inactividad": (
+                None if not sed else 100 * len(sed_ok) / len(sed)),
+            "pausa_tras_aviso_mediana_s": median(sed_ok) if sed_ok else None,
         })
         row.update(fl)
         row.update({
@@ -542,6 +590,8 @@ COMPARED = (
     ("correccion_mediana_s", "Segundos hasta corregir (mediana)"),
     ("pausas_por_hora", "Pausas activas por hora"),
     ("tramo_max_sin_pausa_min", "Tramo más largo sin pausa (min)"),
+    ("pct_pausa_tras_aviso_inactividad",
+     "% de avisos de inactividad seguidos de pausa"),
     ("dolor_cuello", "Dolor de cuello (0–10)"),
     ("cansancio_visual", "Cansancio visual (0–10)"),
     ("somnolencia", "Somnolencia (0–10)"),

@@ -88,7 +88,7 @@ seguimiento: eso es justamente una pausa activa, y se mide.
 | 3 | **Piloto de campo: 3 personas, 3–5 días** (no cuentan en el estudio) | Pedir el `.zip` **al tercer día**. Detecta los problemas reales (cámara ocupada por Teams o Zoom, días sin datos, avisos molestos) cuando aún hay tiempo de corregirlos |
 | 4 | **Congelar la versión** | Subir `APP_VERSION` en `src/version.py`, commit y `git tag estudio-v1`. A partir de aquí **no se cambia nada**. Cada sesión guarda la versión y la huella de `thresholds.json` (`config_hash`): el exportador avisa si algún equipo usó otra |
 | 5 | **Instalador** | Los participantes no tienen Python. Hay que empaquetar la app (`.exe`) y probarla en una PC limpia (ver §10) |
-| 6 | Instrumentos | Elegir el cuestionario de molestias (Nórdico o NDI) y preparar el SUS (usabilidad) y el consentimiento |
+| 6 | Instrumentos | Cuestionario Nórdico (versión española de Mateos-González et al., 2024) al inicio y al final, SUS en español (Sevilla-Gonzalez et al., 2020) al final, y el consentimiento |
 
 ---
 
@@ -156,6 +156,20 @@ Bostezos y cierres de ojos son **simulados**: decláralo como limitación.
 **Durante los primeros días (línea base) la app no avisa.** Es intencionado y
 el participante lo sabe: la barra muestra *"Línea base: la app mide pero no
 avisa"*. A partir del día 6 de uso aparecen los avisos.
+
+**Desde la intervención, además:**
+
+- **Aviso de pausa activa** (OE 1.3.2.3): tras 45 min seguidos frente a la
+  cámara sin levantarse, la app avisa y repite cada 10 min mientras siga
+  sentado. Levantarse ≥ 60 s reinicia la cuenta. En la línea base se detecta
+  igual pero en silencio, así que el exportador compara la respuesta:
+  `pct_pausa_tras_aviso_inactividad` = % de avisos seguidos de una pausa en
+  los 10 min siguientes. Valores en `config/thresholds.json → sedentary`
+  (45 min es provisional: **confirmar con el especialista**).
+- **Mi historial** (OE 1.3.2.5): botón en la cabecera con los últimos 14 días
+  (% del tiempo en buena postura, horas medidas, pausas por hora, tramo más
+  largo sin levantarse y avisos). **En la línea base está bloqueado**: ver su
+  propia postura ya sería retroalimentación.
 
 **Envío de datos:** botón **Exportar mis datos**. Guarda en el Escritorio un
 `Estudio_P07_<fecha>.zip` y lo selecciona en el Explorador. Se envía:
