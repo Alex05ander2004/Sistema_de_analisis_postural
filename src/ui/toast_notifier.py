@@ -152,6 +152,10 @@ _TOAST_ACTIONS = {
 }
 
 
+# Tipos cuyo toast permanece en pantalla más tiempo (~25 s frente a ~7 s).
+_LONG_TOAST_TYPES = frozenset({"drowsiness"})
+
+
 def _winotify_available() -> bool:
     if sys.platform != "win32":
         return False
@@ -255,7 +259,8 @@ class ToastNotifier:
                 app_id=_APP_ID,
                 title=title,
                 msg=f"{action}\nDetectado durante {alert_event.duration_sec:.0f} s.",
-                duration="short",
+                # La somnolencia es aguda: el aviso se queda más tiempo.
+                duration="long" if alert_type in _LONG_TOAST_TYPES else "short",
                 icon=str(_ICON_PATH) if _ICON_PATH.exists() else "",
             )
             # Sonido suave y sin bucle: debe notarse sin sobresaltar. Un toast

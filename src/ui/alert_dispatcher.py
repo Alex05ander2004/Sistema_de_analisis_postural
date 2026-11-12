@@ -80,7 +80,8 @@ class AlertDispatcher:
                  thresholds: dict,
                  toast=None,
                  show_modal: Optional[Callable] = None,
-                 on_any_alert: Optional[Callable] = None):
+                 on_any_alert: Optional[Callable] = None,
+                 is_ui_visible: Optional[Callable[[], bool]] = None):
         """
         Parameters
         ----------
@@ -96,6 +97,11 @@ class AlertDispatcher:
             Se llama con todo evento, sea cual sea el canal. Lo usa el panel
             de telemetría para dejar rastro visible de la alerta en la propia
             interfaz, que es lo que el usuario consulta al volver al escritorio.
+        is_ui_visible:
+            Devuelve si la ventana de la app está a la vista (no minimizada ni
+            oculta en la bandeja). Con la ventana oculta un modal no lo ve
+            nadie: la alerta sale entonces por notificación. None = se asume
+            visible (comportamiento anterior).
         """
         alerts_cfg = thresholds.get("alerts", {})
 
@@ -114,6 +120,7 @@ class AlertDispatcher:
         self._toast = toast
         self._show_modal = show_modal
         self._on_any_alert = on_any_alert
+        self._is_ui_visible = is_ui_visible
 
         logger.info(
             "AlertDispatcher: modo='%s', bloquean=%s, toast=%s",
@@ -123,6 +130,15 @@ class AlertDispatcher:
         )
 
     # ------------------------------------------------------------------
+
+    def _ui_visible(self) -> bool:
+        if self._is_ui_visible is None:
+            return True
+        try:
+            return bool(self._is_ui_visible())
+        except Exception:
+            logger.exception("No se pudo saber si la ventana está visible.")
+            return False
 
     def is_blocking(self, alert_type_value: str) -> bool:
         """True si este tipo de alerta debe mostrarse como modal bloqueante."""
@@ -157,13 +173,27 @@ class AlertDispatcher:
                 logger.exception("Error en el callback de alerta del panel.")
 
         if self.is_blocking(alert_type):
-            if self._show_modal is not None:
+            # Con la ventana oculta (segundo plano, el caso normal) el modal
+            # se pintaría donde nadie mira: la somnolencia del 29/10/2026
+            # salió 4 veces así y no llegó a verse. Entonces va por toast.
+            visible = self._ui_visible()
+            modal_ok = False
+            if visible and self._show_modal is not None:
                 try:
                     self._show_modal(alert_event)
-                    return MODE_MODAL
+                    modal_ok = True
                 except Exception:
                     logger.exception(
                         "No se pudo mostrar el modal; se intenta con toast.")
+            # En modo "auto" lo bloqueante es lo agudo (somnolencia): además
+            # del modal sale SIEMPRE la notificación del sistema, porque una
+            # ventana "visible" puede estar detrás de otra aplicación.
+            if self._toast is not None and (not modal_ok
+                                            or self.mode == MODE_AUTO):
+                self._toast.show(alert_event)
+                return MODE_MODAL if modal_ok else MODE_TOAST
+            if modal_ok:
+                return MODE_MODAL
             # Sin modal disponible, el toast es mejor que nada.
 
         if self._toast is not None:

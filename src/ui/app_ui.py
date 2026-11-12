@@ -393,6 +393,11 @@ class InferenceThread(threading.Thread):
     # Control de segundo plano
     # ------------------------------------------------------------------
 
+    @property
+    def ui_visible(self) -> bool:
+        """True si la ventana está a la vista (no minimizada ni oculta)."""
+        return self._ui_visible.is_set()
+
     def set_ui_visible(self, visible: bool) -> None:
         """
         Informa al pipeline de si la ventana está a la vista.
@@ -1159,6 +1164,9 @@ def main(page: ft.Page):
         toast=toast_notifier,
         show_modal=_show_modal_on_ui_thread,
         on_any_alert=_record_alert_in_panel,
+        # `inference_thread` se crea más abajo; la lambda lo resuelve al
+        # llegar la primera alerta, cuando ya existe.
+        is_ui_visible=lambda: inference_thread.ui_visible,
     )
 
     def on_alert_fired(alert_event):

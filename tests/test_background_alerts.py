@@ -97,7 +97,64 @@ class TestAlertDispatcherRouting:
 
         assert canal == MODE_MODAL
         assert [e.alert_type for e in modales] == [AlertType.DROWSINESS]
-        assert toast.shown == []
+        # Además sale la notificación: la ventana puede estar detrás de otra.
+        assert toast.shown == [AlertType.DROWSINESS.value]
+
+    def test_drowsiness_with_hidden_window_goes_to_toast_only(self):
+        """
+        En segundo plano un modal no lo ve nadie (sesión del 29/10/2026: 4
+        alertas de somnolencia sin llegar al usuario). Va por notificación y
+        no se deja un modal rancio esperando en la ventana oculta.
+        """
+        toast, modales = FakeToast(), []
+        d = AlertDispatcher(
+            thresholds={"alerts": {"mode": MODE_AUTO}},
+            toast=toast,
+            show_modal=modales.append,
+            is_ui_visible=lambda: False,
+        )
+        assert d.dispatch(make_event(AlertType.DROWSINESS)) == MODE_TOAST
+        assert modales == []
+        assert toast.shown == [AlertType.DROWSINESS.value]
+
+    @pytest.mark.parametrize("alert_type", ALL_TYPES)
+    def test_every_type_reaches_windows_when_hidden(self, alert_type):
+        """Con la ventana oculta, TODO tipo de alerta (ojos y boca incluidos)
+        llega como notificación del sistema."""
+        toast, modales = FakeToast(), []
+        d = AlertDispatcher(
+            thresholds={"alerts": {"mode": MODE_AUTO}},
+            toast=toast,
+            show_modal=modales.append,
+            is_ui_visible=lambda: False,
+        )
+        d.dispatch(make_event(alert_type))
+        assert toast.shown == [alert_type.value]
+        assert modales == []
+
+    def test_modal_mode_with_hidden_window_uses_toast(self):
+        toast, modales = FakeToast(), []
+        d = AlertDispatcher(
+            thresholds={"alerts": {"mode": MODE_MODAL}},
+            toast=toast,
+            show_modal=modales.append,
+            is_ui_visible=lambda: False,
+        )
+        assert d.dispatch(make_event(AlertType.CERVICAL_ANGLE)) == MODE_TOAST
+        assert modales == []
+
+    def test_visibility_callback_failure_falls_back_to_toast(self):
+        def roto():
+            raise RuntimeError("sin ventana")
+        toast, modales = FakeToast(), []
+        d = AlertDispatcher(
+            thresholds={"alerts": {"mode": MODE_AUTO}},
+            toast=toast,
+            show_modal=modales.append,
+            is_ui_visible=roto,
+        )
+        assert d.dispatch(make_event(AlertType.DROWSINESS)) == MODE_TOAST
+        assert modales == []
 
     @pytest.mark.parametrize("alert_type", ALL_TYPES)
     def test_mode_toast_never_blocks(self, alert_type):
