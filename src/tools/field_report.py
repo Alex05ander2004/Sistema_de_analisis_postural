@@ -26,7 +26,8 @@ from src.tools.field_analysis import COMPARED, band_labels
 
 BASE_COLOR = "#7A8BA6"
 INTERV_COLOR = "#0E8F8A"
-PHASE_NAME = {"linea_base": "Línea base", "intervencion": "Intervención"}
+PHASE_NAME = {"linea_base": "Línea base", "intervencion": "Intervención",
+              "control": "Control"}
 
 
 def _fmt(v, nd=1) -> str:
@@ -259,6 +260,12 @@ def build_report(summary: dict, days: Sequence[dict], hourly: Sequence[dict],
         ("Sí" if summary["valido_para_analisis"] == "si" else "No",
          "válido para el análisis"),
     ]
+    control_note = (
+        "<p><b>Grupo de control:</b> esta persona usó la app sin recibir "
+        "nunca avisos. En la comparación, «línea base» e «intervención» son "
+        "los días antes y después de un corte de referencia, para ver si "
+        "cambió solo con el paso del tiempo.</p>"
+        if summary.get("grupo") == "control" else "")
     kpi_html = "".join(f'<div class="kpi"><b>{html.escape(str(v))}</b>'
                        f'<span>{html.escape(t)}</span></div>' for v, t in kpis)
 
@@ -297,6 +304,7 @@ def build_report(summary: dict, days: Sequence[dict], hourly: Sequence[dict],
 <title>Reporte {code}</title><style>{_CSS}</style></head>
 <body><main>
 <h1>Reporte de seguimiento · {code}</h1>
+{control_note}
 <p class="sub">Monitor Postural y Fatiga (Tesis UNSA 2026) · generado el
 {datetime.now():%Y-%m-%d %H:%M} · versión(es) de la app:
 {html.escape(summary["versiones_app"] or "—")}</p>
@@ -351,12 +359,99 @@ no válidos se muestran atenuados y no entran en la comparación.</li>
 </main></body></html>"""
 
 
+def multiple_baseline_html(summaries: Sequence[dict],
+                           days_by_code: Dict[str, List[dict]],
+                           key: str = "pct_desviado",
+                           label: str = "% del tiempo con desviación cervical "
+                                        "sobre el umbral") -> str:
+    """
+    Gráfico de línea base múltiple: un panel por participante, día de uso en
+    el eje x, el indicador en el eje y y una línea discontinua donde empiezan
+    SUS avisos. Los de intervención van ordenados por día de inicio y el
+    control al final. Es la figura central de un diseño de caso único.
+    """
+    order = sorted(summaries, key=lambda s: (
+        s.get("grupo") == "control", s.get("dia_inicio_avisos") or 99,
+        s["participante"]))
+    max_day = max([d["dia_uso"] for s in order
+                   for d in days_by_code.get(s["participante"], [])] or [1])
+    vals = [d[key] for s in order
+            for d in days_by_code.get(s["participante"], [])
+            if isinstance(d.get(key), (int, float))]
+    vmax = max(vals + [10.0]) * 1.1
+    W, H, L, R, T, B = 900, 150, 70, 20, 16, 30
+    X = lambda day: L + (day - 0.5) / max_day * (W - L - R)
+    Y = lambda v: T + (1 - v / vmax) * (H - T - B)
+    panels = []
+    for s in order:
+        code = s["participante"]
+        days = days_by_code.get(code, [])
+        pts = [(d["dia_uso"], d[key], d["dia_valido"] == "si", d["fase"])
+               for d in days if isinstance(d.get(key), (int, float))]
+        parts = [f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" '
+                 f'aria-label="{html.escape(code)}">']
+        parts.append(f'<line x1="{L}" y1="{H - B}" x2="{W - R}" y2="{H - B}" '
+                     f'stroke="#999"/>')
+        parts.append(f'<line x1="{L}" y1="{T}" x2="{L}" y2="{H - B}" '
+                     f'stroke="#999"/>')
+        for v in (0, vmax / 2):
+            parts.append(f'<text x="{L - 6}" y="{Y(v) + 4:.0f}" '
+                         f'text-anchor="end" font-size="11" fill="#555">'
+                         f'{v:.0f}</text>')
+        for day in range(1, max_day + 1):
+            parts.append(f'<text x="{X(day):.0f}" y="{H - 12}" '
+                         f'text-anchor="middle" font-size="10" fill="#777">'
+                         f'{day}</text>')
+        start = s.get("dia_inicio_avisos")
+        if start:
+            xs = X(start - 0.5)
+            parts.append(f'<line x1="{xs:.0f}" y1="{T}" x2="{xs:.0f}" '
+                         f'y2="{H - B}" stroke="#333" stroke-dasharray="5 4"/>')
+        for seg in ("linea_base", "intervencion", "control"):
+            seg_pts = [(x, v) for x, v, _, f in pts if f == seg]
+            if len(seg_pts) > 1:
+                color = INTERV_COLOR if seg == "intervencion" else BASE_COLOR
+                path = " ".join(f"{X(x):.1f},{Y(v):.1f}" for x, v in seg_pts)
+                parts.append(f'<polyline points="{path}" fill="none" '
+                             f'stroke="{color}" stroke-width="2"/>')
+        for x, v, ok, f in pts:
+            color = INTERV_COLOR if f == "intervencion" else BASE_COLOR
+            fill = color if ok else "white"
+            parts.append(f'<circle cx="{X(x):.1f}" cy="{Y(v):.1f}" r="4" '
+                         f'fill="{fill}" stroke="{color}" stroke-width="1.5">'
+                         f'<title>Día {x}: {v:.1f}</title></circle>')
+        parts.append("</svg>")
+        napv = s.get(f"nap_{key}")
+        tag = ("control (sin avisos)" if s.get("grupo") == "control"
+               else f"avisos desde el día {start}" if start else "sin avisos aún")
+        nap_txt = "" if napv is None else f" · NAP {napv:.2f}"
+        panels.append(f'<div class="panel"><h3>{html.escape(code)} '
+                      f'<small>{tag}{nap_txt}</small></h3>{"".join(parts)}</div>')
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Línea base múltiple</title>
+<style>html{{background:#fff;color-scheme:light}}body{{font-family:Segoe UI,Arial,sans-serif;max-width:960px;margin:24px auto;color:#222;background:#fff}}
+h1{{font-size:22px}}h3{{font-size:15px;margin:14px 0 2px}}small{{color:#666;font-weight:400}}
+.panel{{border-bottom:1px solid #eee}}p{{color:#444;font-size:13px}}</style></head><body>
+<h1>Línea base múltiple: {html.escape(label)}</h1>
+<p>Un panel por participante. Gris: días sin avisos (línea base o control); verde: días con avisos.
+La línea discontinua marca el día en que empezaron los avisos de ese participante. Punto relleno = día
+válido; hueco = día con poco uso (no entra en el análisis). NAP: proporción de pares de días en que la
+fase con avisos es mejor que la línea base (0.5 = sin efecto, 1 = mejora total). En el control, el NAP
+usa un corte de referencia y muestra el cambio sin avisos.</p>
+{''.join(panels)}
+</body></html>"""
+
+
 def write_reports(out_dir: Path, summaries: Sequence[dict],
                   days_by_code: Dict[str, List[dict]],
                   hourly_by_code: Dict[str, List[dict]],
                   dev_threshold: float, bands: Sequence[float]) -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
+    mb = out_dir / "linea_base_multiple.html"
+    mb.write_text(multiple_baseline_html(summaries, days_by_code),
+                  encoding="utf-8")
+    paths.append(mb)
     for s in summaries:
         code = s["participante"]
         p = out_dir / f"reporte_{code}.html"

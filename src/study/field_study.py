@@ -16,6 +16,17 @@ Cada participante usa la app en su propio equipo durante ~15 días de uso:
 Comparar A con B en la misma persona es lo que permite atribuir un cambio al
 sistema y no a la costumbre o al azar.
 
+Línea base múltiple con control (diseño elegido, 2026-11-12)
+-----------------------------------------------------------
+Los participantes del grupo de intervención no empiezan a recibir avisos el
+mismo día: cada uno tiene su propia duración de línea base
+(`dias_linea_base` del perfil, p. ej. 5, 7 o 9 días, sorteados). Si cada uno
+mejora justo cuando empiezan SUS avisos, y no antes, la mejora se atribuye al
+sistema y no a una causa común (la semana, la novedad, saberse observado).
+El grupo de control usa la app todo el estudio sin recibir nunca avisos (fase
+"control"): muestra qué cambia solo por el paso del tiempo. Ver Kratochwill
+et al. (2010).
+
 Por qué "días válidos" y no días de calendario
 ----------------------------------------------
 Si la línea base fueran los 5 primeros días de calendario, un fin de semana o
@@ -30,7 +41,8 @@ data/estudio_local.json guarda lo que es propio de ESE equipo y ese
 participante, para que config/thresholds.json sea idéntico en los 25 equipos:
 
     {"participante": "P07", "modo": "campo", "inscrito": "2026-11-03",
-     "camera_hfov_deg": 63.2}
+     "camera_hfov_deg": 63.2, "grupo": "intervencion",
+     "dias_linea_base": 7}
 
 Autor: Tesis Huisa Perez, UNSA 2026
 """
@@ -53,6 +65,14 @@ VALID_MODES = (MODE_LAB, MODE_FIELD)
 PHASE_VALIDATION = "validacion"
 PHASE_BASELINE = "linea_base"
 PHASE_INTERVENTION = "intervencion"
+PHASE_CONTROL = "control"
+
+GROUP_INTERVENTION = "intervencion"
+GROUP_CONTROL = "control"
+VALID_GROUPS = (GROUP_INTERVENTION, GROUP_CONTROL)
+
+# Rango admitido para la línea base de un participante (días de uso).
+MIN_BASELINE_DAYS, MAX_BASELINE_DAYS = 1, 20
 
 
 def normalize_code(code: str) -> str:
@@ -70,6 +90,12 @@ class LocalProfile:
     modo: str = MODE_LAB
     inscrito: str = ""
     camera_hfov_deg: Optional[float] = None
+    grupo: str = GROUP_INTERVENTION
+    dias_linea_base: Optional[int] = None   # None = el de la configuración
+
+    def baseline_days(self, default: int) -> int:
+        """Días de línea base de ESTE participante."""
+        return int(self.dias_linea_base) if self.dias_linea_base else int(default)
 
     @classmethod
     def load(cls, path: Path) -> "LocalProfile":
@@ -86,7 +112,19 @@ class LocalProfile:
             modo=raw.get("modo", MODE_LAB),
             inscrito=str(raw.get("inscrito", "") or ""),
             camera_hfov_deg=raw.get("camera_hfov_deg"),
+            grupo=raw.get("grupo", GROUP_INTERVENTION),
+            dias_linea_base=raw.get("dias_linea_base"),
         )
+        if prof.grupo not in VALID_GROUPS:
+            logger.warning("Grupo '%s' no válido en el perfil; se usa '%s'.",
+                           prof.grupo, GROUP_INTERVENTION)
+            prof.grupo = GROUP_INTERVENTION
+        try:
+            dias = int(prof.dias_linea_base) if prof.dias_linea_base else None
+        except (TypeError, ValueError):
+            dias = None
+        prof.dias_linea_base = (dias if dias and MIN_BASELINE_DAYS <= dias
+                                <= MAX_BASELINE_DAYS else None)
         if prof.modo not in VALID_MODES:
             logger.warning("Modo '%s' no válido en el perfil; se usa '%s'.",
                            prof.modo, MODE_LAB)
@@ -139,6 +177,21 @@ def decide_phase(minutes_by_date: Dict[str, float], today: str,
     phase = (PHASE_BASELINE if qualified < max(0, int(baseline_days))
              else PHASE_INTERVENTION)
     return phase, day_number, qualified
+
+
+def field_phase(profile: "LocalProfile", minutes_by_date: Dict[str, float],
+                today: str, default_baseline_days: int, min_minutes: float
+                ) -> Tuple[str, int, int]:
+    """
+    Fase de campo de ESTE participante: su propia línea base y, si es del
+    grupo de control, fase "control" todo el estudio (nunca avisa).
+    """
+    phase, day, done = decide_phase(
+        minutes_by_date, today, profile.baseline_days(default_baseline_days),
+        min_minutes)
+    if profile.grupo == GROUP_CONTROL:
+        phase = PHASE_CONTROL
+    return phase, day, done
 
 
 def pending_report_date(use_dates, reported_dates, today: str) -> Optional[str]:

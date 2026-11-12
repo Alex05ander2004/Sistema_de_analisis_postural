@@ -56,7 +56,7 @@ from datetime import datetime
 from statistics import mean, median
 from typing import Dict, List, Optional, Sequence, Tuple
 
-FIELD_PHASES = ("linea_base", "intervencion")
+FIELD_PHASES = ("linea_base", "intervencion", "control")
 
 # Filas registradas a menos de estos FPS no son mediciones: la cámara estaba
 # compartida con otra app (videollamada) y entregaba ~1 frame/s sin imagen
@@ -80,6 +80,7 @@ class FieldConfig:
     sedentary_response_sec: float = 600.0  # plazo para levantarse tras el aviso
     valid_day_min_minutes: float = 120.0
     valid_day_min_block_minutes: float = 60.0
+    baseline_days: int = 5               # study.field.baseline_days
     min_valid_days_baseline: int = 3
     min_valid_days_intervention: int = 6
 
@@ -99,6 +100,7 @@ class FieldConfig:
             sedentary_response_sec=60.0 * float(
                 cfg.get("sedentary", {}).get("response_window_min", 10.0)),
             valid_day_min_minutes=float(fld.get("valid_day_min_minutes", 120)),
+            baseline_days=int(fld.get("baseline_days", 5)),
             valid_day_min_block_minutes=float(
                 fld.get("valid_day_min_block_minutes", 60)),
             min_valid_days_baseline=int(
@@ -609,6 +611,34 @@ COMPARED = (
 )
 
 
+# Indicadores con tamaño del efecto NAP: (clave, ¿menor es mejor?).
+NAP_INDICATORS = (
+    ("pct_desviado", True),
+    ("correccion_mediana_s", True),
+    ("pausas_por_hora", False),
+)
+
+
+def nap(base: Sequence[float], interv: Sequence[float],
+        lower_is_better: bool = True) -> Optional[float]:
+    """
+    Non-overlap of All Pairs (Parker y Vannest, 2009): proporción de pares
+    (día de línea base, día de intervención) en que la intervención es
+    mejor; los empates cuentan 0.5. 0.5 = sin efecto; 1 = todos mejoran.
+    Orientación: 0.50–0.65 débil, 0.66–0.92 medio, 0.93–1 fuerte.
+    """
+    if not base or not interv:
+        return None
+    score = 0.0
+    for b in base:
+        for i in interv:
+            if i == b:
+                score += 0.5
+            elif (i < b) == lower_is_better:
+                score += 1.0
+    return score / (len(base) * len(interv))
+
+
 def participant_summary(pd: ParticipantData, days: Sequence[dict],
                         cfg: FieldConfig, planned_days: int = 15) -> dict:
     """
@@ -616,13 +646,25 @@ def participant_summary(pd: ParticipantData, days: Sequence[dict],
     pareada): media de los días VÁLIDOS de cada fase y su diferencia.
     """
     valid = [d for d in days if d["dia_valido"] == "si"]
-    base = [d for d in valid if d["fase"] == "linea_base"]
-    interv = [d for d in valid if d["fase"] == "intervencion"]
+    is_control = any(d["fase"] == "control" for d in days)
+    if is_control:
+        # El control nunca recibe avisos. Para ver si cambia solo con el
+        # tiempo, se le aplica un corte de referencia en el día en que
+        # empezarían los avisos con la línea base por defecto.
+        base = [d for d in valid if d["dia_uso"] <= cfg.baseline_days]
+        interv = [d for d in valid if d["dia_uso"] > cfg.baseline_days]
+    else:
+        base = [d for d in valid if d["fase"] == "linea_base"]
+        interv = [d for d in valid if d["fase"] == "intervencion"]
     ok = (len(base) >= cfg.min_valid_days_baseline
           and len(interv) >= cfg.min_valid_days_intervention)
+    first_interv = next((d["dia_uso"] for d in days
+                         if d["fase"] == "intervencion"), None)
     reports = [d for d in days if d["autorreporte"] in ("si", "retrospectivo")]
     out = {
         "participante": pd.code,
+        "grupo": "control" if is_control else "intervencion",
+        "dia_inicio_avisos": first_interv,
         "dias_uso": len(days),
         "dias_validos": len(valid),
         "dias_validos_linea_base": len(base),
@@ -646,6 +688,10 @@ def participant_summary(pd: ParticipantData, days: Sequence[dict],
         out[f"{key}_interv"] = mi
         out[f"{key}_cambio"] = (mi - mb) if (mb is not None
                                              and mi is not None) else None
+    for key, lower in NAP_INDICATORS:
+        b = [d[key] for d in base if isinstance(d.get(key), (int, float))]
+        i = [d[key] for d in interv if isinstance(d.get(key), (int, float))]
+        out[f"nap_{key}"] = nap(b, i, lower)
     return out
 
 

@@ -12,14 +12,35 @@
 | Parte | Cuándo | Dónde | Duración | Qué mide |
 |---|---|---|---|---|
 | **A. Validación** | Día 0, al instalar | Equipo del participante, con el investigador presente | ~25 min | ¿El sistema **acierta**? Sensibilidad, especificidad y precisión (matriz de confusión) |
-| **B1. Línea base** | Días de uso 1–5 | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
-| **B2. Intervención** | Días de uso 6–15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
+| **B1. Línea base** | Días de uso 1 a 5, 7 o 9 (sorteado por participante) | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
+| **B2. Intervención** | Desde el día 6, 8 o 10 hasta el 15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
+| **Control** | Días 1–15, sin avisos nunca | Igual | ≥ 2 h/día | Qué cambia solo con el tiempo y por saberse observado |
 | **C. Cierre** | Al terminar | — | 10 min | Exportar los datos, cuestionarios de salida |
 
 Las dos partes responden preguntas distintas. En casa nadie anota qué postura
 tenía la persona en cada momento, así que **la precisión solo puede salir de la
-parte A**. El **efecto del sistema** solo puede salir de la parte B, comparando a
-cada persona consigo misma (diseño A-B intra-sujeto).
+parte A**. El **efecto del sistema** solo puede salir de la parte B.
+
+### Diseño: línea base múltiple con control (decidido con el asesor, 2026-11-12)
+
+- **Todos** reciben el día 0 la misma hoja de recomendaciones ergonómicas
+  (altura de la pantalla, distancia, pausas): es el «tratamiento
+  tradicional».
+- **Grupo de intervención:** recomendaciones + software. Cada participante
+  empieza a recibir avisos en un día distinto: tras **5, 7 o 9 días** de
+  línea base, **sorteados** (con dado o random.org; anotar el resultado antes
+  de instalar). Se configura en **⚙ Estudio → Días de línea base**.
+- **Grupo de control:** solo recomendaciones. Usa la app los 15 días en fase
+  «control»: mide, nunca avisa y «Mi historial» queda bloqueado. Se configura
+  en **⚙ Estudio → Grupo: Control**.
+- **Por qué:** si cada participante mejora justo cuando empiezan SUS avisos, y
+  no antes, una causa común (la semana, la novedad, saberse observado) no lo
+  explica, porque los inicios están en días distintos. El control muestra el
+  cambio sin avisos. Tres inicios distintos cumplen el criterio de calidad de
+  Kratochwill et al. (2010) para diseños de caso único.
+- **Mínimo:** 3 de intervención (uno por día de inicio) y 1 de control. Con
+  más participantes: repartir los de intervención en partes iguales entre los
+  tres días de inicio y dejar aproximadamente 1 de cada 5 en el control.
 
 ---
 
@@ -100,7 +121,7 @@ seguimiento: eso es justamente una pausa activa, y se mide.
 | 5–10 | Instalar la app. Botón **⚙ Estudio**: código, modo **Laboratorio** y **FOV** (sentar a la persona a una distancia medida con cinta, p. ej. 0.60 m, escribirla y pulsar *Calcular*; luego *Guardar*) |
 | 10–13 | Colocación (cámara a la altura de los ojos, 0.50–0.70 m) y **Calibrar** → **Iniciar** |
 | 13–28 | **Bloque guiado**: 17 tramos etiquetados con el selector de condición (ver §5) |
-| 28–33 | Botón **⚙ Estudio** → modo **Campo** → Guardar. Desde aquí la app está en línea base |
+| 28–33 | Botón **⚙ Estudio** → modo **Campo**, **Grupo** (intervención o control) y **Días de línea base** sorteados → Guardar. Desde aquí la app está en línea base (o en control) |
 | 33–40 | Explicar al participante qué hacer (§6) y entregarle la hoja de instrucciones |
 
 ---
@@ -233,10 +254,14 @@ sesión tiene un identificador único.
 
 1. **Precisión (parte A):** global y por condición con IC 95 %, latencia
    mediana, y el rango por participante.
-2. **Efecto (parte B), resultado principal:** `pct_desviado` en línea base
-   frente a intervención, con **Wilcoxon de rangos con signo** sobre los
-   participantes válidos (`resumen_participantes.csv`, columnas `_base` e
-   `_interv`). Reportar la mediana del cambio y el tamaño del efecto.
+2. **Efecto (parte B), resultado principal:** la figura
+   `reportes/linea_base_multiple.html` (un panel por participante, con la
+   línea del día en que empezaron sus avisos) y el **NAP** de `pct_desviado`
+   por participante (`resumen_participantes.csv`, `nap_pct_desviado`;
+   0.5 = sin efecto, 0.66–0.92 medio, ≥ 0.93 fuerte). Con 6 o más
+   participantes de intervención, además **Wilcoxon** sobre las columnas
+   `_base` e `_interv`. En el control, el NAP usa un corte de referencia en el
+   día `baseline_days` y debe salir cerca de 0.5.
 3. **Secundarios:** episodio más largo, tramo sin pausa, pausas por hora,
    PERCLOS, segundos hasta corregir y autorreporte, con la misma prueba.
    Varias pruebas a la vez: corregir por comparaciones múltiples (Holm) o
@@ -289,9 +314,9 @@ sesión tiene un identificador único.
   debe decir *"Otra aplicación está usando la cámara…"* → salir de la
   llamada → en ≤ 20 s la app debe volver a mostrar imagen y medir (en el log:
   `Cámara: shared → ok`).
-- [x] **2c. Teams y Zoom de escritorio** (2026-11-12): la cámara no puede
-  usarse a la vez en la app y en la videollamada. Se declara como limitación
-  (§12); el participante pausa o cede la cámara durante la llamada.
+- [x] **2c. Teams y Zoom de escritorio** (2026-11-12): igual que Meet. La
+  cámara no se usa a la vez en la app y en la llamada, pero «Ceder cámara»
+  funciona y la app vuelve a medir sola al colgar. Limitación en §12.
 
 - [ ] **3. Suspender y volver.** Con la app monitoreando, cierra la tapa del
   portátil 2 minutos y ábrela. La app debe volver a medir sola (en el log:
@@ -349,9 +374,10 @@ ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
   verdad de terreno.
 - Δθc es una desviación **relativa** a la postura neutra de cada día, no el
   ángulo craneovertebral clínico.
-- Diseño A-B sin grupo control: un cambio entre fases también puede deberse a
-  la novedad o a saberse observado (efecto Hawthorne). La línea base lo
-  atenúa, no lo elimina.
+- Diseño de caso único (línea base múltiple con control): la conclusión vale
+  para los participantes estudiados; el control y los inicios escalonados
+  reducen, pero no eliminan, la influencia de la novedad y de saberse
+  observado (efecto Hawthorne).
 - En la línea base la ventana de la app muestra las métricas en vivo: quien la
   mira recibe algo de retroalimentación. Por eso se pide trabajar con la
   ventana cerrada.
@@ -361,7 +387,7 @@ ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
 - La cámara web no puede compartirse: Windows la entrega a una sola
   aplicación a la vez. Durante las videollamadas el sistema no mide (con
   «Ceder cámara» o «Pausar»), y ese tiempo queda como «sin datos», no como
-  ausencia. Probado con Meet (cede y vuelve a medir solo); con Teams y Zoom
-  de escritorio tampoco es posible el uso simultáneo.
+  ausencia. Probado con Google Meet, Microsoft Teams y Zoom: «Ceder cámara»
+  funciona y el sistema vuelve a medir solo al terminar la llamada.
 - Umbrales provisionales (Δθc, ratio 0.65 del EAR, MAR 0.45) sin validación
   clínica; un solo experto (N = 1) para los criterios clínicos.

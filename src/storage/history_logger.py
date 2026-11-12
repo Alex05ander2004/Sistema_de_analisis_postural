@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_metrics_session   ON metrics_log(session_id);
 """
 
 # Fases de campo (sessions.study_phase); ver src/study/field_study.py.
-FIELD_PHASES = ("linea_base", "intervencion")
+FIELD_PHASES = ("linea_base", "intervencion", "control")
 
 
 class HistoryLogger:

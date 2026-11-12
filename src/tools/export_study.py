@@ -724,15 +724,19 @@ def print_summary(result: dict) -> None:
         validos = [p for p in parts_f if p["valido_para_analisis"] == "si"]
         print(f"\nEstudio de campo: {len(parts_f)} participante(s), "
               f"{len(validos)} válido(s) para la comparación pareada.")
-        print(f"  {'part.':8s} {'días':>4s} {'válidos':>7s} {'base':>4s} "
-              f"{'interv':>6s}  {'%desv base→interv':>20s}")
+        print(f"  {'part.':8s} {'grupo':6s} {'días':>4s} {'válidos':>7s} "
+              f"{'base':>4s} {'interv':>6s}  {'%desv base→interv':>20s}  NAP")
         for p in parts_f:
             b, i = p.get("pct_desviado_base"), p.get("pct_desviado_interv")
             cambio = (f"{b:.1f} → {i:.1f}" if isinstance(b, float)
                       and isinstance(i, float) else "—")
-            print(f"  {p['participante']:8s} {p['dias_uso']:4d} "
+            napv = p.get("nap_pct_desviado")
+            nap_txt = f"{napv:.2f}" if isinstance(napv, float) else "—"
+            grupo = "ctrl" if p.get("grupo") == "control" else "interv"
+            print(f"  {p['participante']:8s} {grupo:6s} {p['dias_uso']:4d} "
                   f"{p['dias_validos']:7d} {p['dias_validos_linea_base']:4d} "
-                  f"{p['dias_validos_intervencion']:6d}  {cambio:>20s}")
+                  f"{p['dias_validos_intervencion']:6d}  {cambio:>20s}  "
+                  f"{nap_txt}")
         hashes = {h for p in parts_f for h in p["configuraciones"].split(";")
                   if h}
         if len(hashes) > 1:

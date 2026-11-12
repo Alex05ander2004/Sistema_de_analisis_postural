@@ -78,8 +78,9 @@ from src.fusion.guided_calibration import (
 )
 from src.storage.history_logger import HistoryLogger
 from src.study.field_study import (
-    MODE_FIELD, MODE_LAB, PHASE_BASELINE, PHASE_VALIDATION, LocalProfile,
-    decide_phase, normalize_code, pending_report_date, today_iso,
+    GROUP_CONTROL, GROUP_INTERVENTION, MAX_BASELINE_DAYS, MIN_BASELINE_DAYS,
+    MODE_FIELD, MODE_LAB, PHASE_BASELINE, PHASE_CONTROL, PHASE_VALIDATION,
+    LocalProfile, field_phase, normalize_code, pending_report_date, today_iso,
 )
 from src.study.data_bundle import create_bundle
 from src.study.personal_history import daily_history, week_comparison
@@ -694,12 +695,15 @@ class InferenceThread(threading.Thread):
                 logger.exception("No se pudieron leer los días de uso; "
                                  "se asume intervención.")
                 minutes = {}
-            self._phase, self._day_number, done = decide_phase(
-                minutes, today_iso(),
-                baseline_days=int(self._field_cfg.get("baseline_days", 5)),
+            self._phase, self._day_number, done = field_phase(
+                self._profile, minutes, today_iso(),
+                default_baseline_days=int(self._field_cfg.get(
+                    "baseline_days", 5)),
                 min_minutes=float(self._field_cfg.get(
                     "baseline_min_minutes", 60)))
-            self._alerts_muted = self._phase == PHASE_BASELINE
+            # Línea base y control: se mide y se registra, pero no se avisa.
+            self._alerts_muted = self._phase in (PHASE_BASELINE,
+                                                 PHASE_CONTROL)
             logger.info("Estudio de campo: día de uso %d, fase %s (%d días "
                         "de línea base completados).", self._day_number,
                         self._phase, done)
@@ -1494,6 +1498,16 @@ def main(page: ft.Page):
                                     "Laboratorio (protocolo guiado)"),
                  ft.dropdown.Option(MODE_FIELD,
                                     "Campo (uso diario en casa)")])
+    cfg_group = ft.Dropdown(
+        label="Grupo", width=300, text_size=14,
+        options=[ft.dropdown.Option(GROUP_INTERVENTION,
+                                    "Intervención (recibe avisos)"),
+                 ft.dropdown.Option(GROUP_CONTROL,
+                                    "Control (solo medición, nunca avisa)")])
+    cfg_days = ft.Dropdown(
+        label="Días de línea base (sorteados)", width=300, text_size=14,
+        options=[ft.dropdown.Option(str(n)) for n in
+                 range(MIN_BASELINE_DAYS, MAX_BASELINE_DAYS + 1)])
     cfg_real = ft.TextField(label="Distancia real medida (m)", width=260,
                             text_size=14, hint_text="p. ej. 0.60")
     cfg_fov_info = ft.Text("", size=12, color=ft.colors.WHITE70)
@@ -1539,6 +1553,9 @@ def main(page: ft.Page):
             return
         profile.participante = code
         profile.modo = cfg_mode.value or MODE_LAB
+        profile.grupo = cfg_group.value or GROUP_INTERVENTION
+        profile.dias_linea_base = (int(cfg_days.value) if cfg_days.value
+                                   else None)
         if profile.modo == MODE_FIELD and not profile.inscrito:
             profile.inscrito = today_iso()
         if _pending_fov["value"]:
@@ -1556,7 +1573,12 @@ def main(page: ft.Page):
         participant_field.value = code
         page.close(study_dialog)
         _refresh_controls(force=True)
-        _snack(f"Guardado: {code or 'sin código'} · modo {profile.modo}")
+        detalle = (" · grupo control" if profile.grupo == GROUP_CONTROL
+                   else f" · línea base de "
+                        f"{profile.baseline_days(field_cfg.get('baseline_days', 5))}"
+                        f" días")
+        _snack(f"Guardado: {code or 'sin código'} · modo {profile.modo}"
+               + (detalle if profile.modo == MODE_FIELD else ""))
 
     study_dialog = ft.AlertDialog(
         modal=True,
@@ -1564,7 +1586,11 @@ def main(page: ft.Page):
         content=ft.Column([
             ft.Text("Para el investigador, al instalar la app en el equipo "
                     "del participante.", size=12, color=ft.colors.WHITE54),
-            cfg_code, cfg_mode,
+            cfg_code, cfg_mode, cfg_group, cfg_days,
+            ft.Text("Grupo y días de línea base solo cuentan en modo campo. "
+                    "Sortea los días de línea base entre los participantes "
+                    "de intervención (p. ej. 5, 7 y 9).",
+                    size=11, color=ft.colors.WHITE54),
             ft.Divider(),
             ft.Text("Cámara de este equipo (FOV)", weight=ft.FontWeight.W_600),
             ft.Text("Siéntate a una distancia medida con cinta métrica, del "
@@ -1586,6 +1612,9 @@ def main(page: ft.Page):
     def _on_study_click(_):
         cfg_code.value = inference_thread.participant
         cfg_mode.value = inference_thread.study_mode or MODE_LAB
+        cfg_group.value = profile.grupo
+        cfg_days.value = str(profile.baseline_days(
+            field_cfg.get("baseline_days", 5)))
         cfg_real.value = ""
         cfg_error.value = ""
         _pending_fov["value"] = None
@@ -1643,19 +1672,23 @@ def main(page: ft.Page):
         """
         if not (study_on and inference_thread.study_mode == MODE_FIELD):
             return ""
+        if profile.grupo == GROUP_CONTROL:
+            return ("Durante el estudio la app solo mide. Tu historial estará "
+                    "disponible al terminar el estudio.")
+        default_days = int(field_cfg.get("baseline_days", 5))
         try:
             minutes = inference_thread.history.field_minutes_by_date(
                 inference_thread.participant)
-            phase, _, done = decide_phase(
-                minutes, today_iso(),
-                baseline_days=int(field_cfg.get("baseline_days", 5)),
+            phase, _, done = field_phase(
+                profile, minutes, today_iso(),
+                default_baseline_days=default_days,
                 min_minutes=float(field_cfg.get("baseline_min_minutes", 60)))
         except Exception:
             logger.exception("No se pudo decidir la fase para el historial.")
             return ""
         if phase != PHASE_BASELINE:
             return ""
-        faltan = max(1, int(field_cfg.get("baseline_days", 5)) - done)
+        faltan = max(1, profile.baseline_days(default_days) - done)
         return ("Durante los primeros días del estudio la app solo mide. Tu "
                 "historial y los avisos se activarán cuando completes "
                 f"{faltan} día(s) más de uso.")
