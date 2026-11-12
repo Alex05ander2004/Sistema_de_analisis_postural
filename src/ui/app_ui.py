@@ -351,6 +351,7 @@ class InferenceThread(threading.Thread):
             on_alert=self._handle_alert,
             cooldown_sec=ui_cfg.get("alert_cooldown_sec", 30),
         )
+        self._fsm.on_suppressed = self._handle_suppressed
         self._alert_policy = thresholds.get("alert_policy") or None
         self._apply_alert_policy()
 
@@ -719,6 +720,14 @@ class InferenceThread(threading.Thread):
         return "; ".join(partes) if len(partes) > 1 else "Sin calibración"
 
     # ------------------------------------------------------------------
+
+    def _handle_suppressed(self, alert_event) -> None:
+        """Detección durante el enfriamiento: solo a la bitácora."""
+        try:
+            self._db.log_event(alert_event, condition=self._condition,
+                               notified=False, suppressed=True)
+        except Exception:
+            logger.exception("No se pudo registrar la detección suprimida")
 
     def _handle_alert(self, alert_event) -> None:
         """

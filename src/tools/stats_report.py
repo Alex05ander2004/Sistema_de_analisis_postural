@@ -141,12 +141,14 @@ def show_session_stats(session_id: str | None, db_path: Path,
         conn.close()
         return {}
 
-    # Eventos
-    cur.execute("""
+    # Eventos (sin las detecciones en enfriamiento, que no son alertas)
+    ecols = {r[1] for r in cur.execute("PRAGMA table_info(events)")}
+    only_alerts = " AND COALESCE(suppressed, 0) = 0" if "suppressed" in ecols else ""
+    cur.execute(f"""
         SELECT alert_type, COUNT(*) as cnt,
                AVG(duration_sec) as avg_dur,
                AVG(metric_value) as avg_val
-        FROM events WHERE session_id = ?
+        FROM events WHERE session_id = ?{only_alerts}
         GROUP BY alert_type
     """, (session_id,))
     events_by_type = {row["alert_type"]: dict(row) for row in cur.fetchall()}

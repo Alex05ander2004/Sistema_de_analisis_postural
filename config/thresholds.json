@@ -111,7 +111,7 @@
     "_comment": "Política de AVISO del uso diario (modo campo y uso sin estudio). En modo laboratorio (validación) NO se aplica: se usan las ventanas de 'postural'/'fatigue' y ui.alert_cooldown_sec, para medir la DETECCIÓN tramo a tramo. Motivo (2026-11-12): con ventanas de 5-8 s y enfriamiento de 30 s un usuario con mala postura sostenida recibía hasta 2 avisos por minuto de cada tipo, la receta de la fatiga de alertas. Valores de ingeniería, a confirmar con el especialista.",
     "cervical_alert_window_sec": 30,
     "shoulder_alert_window_sec": 30,
-    "_windows_comment": "Solo se avisa de una postura MANTENIDA. El riesgo musculoesquelético viene de la carga estática sostenida (ISO 11226 evalúa tiempos de mantenimiento, no instantes); 5 s capturaban gestos como mirar el teclado o alcanzar algo.",
+    "_windows_comment": "Solo se avisa de una postura MANTENIDA. ISO 11226:2000 trata como estática una postura sostenida más de 4 s y evalúa el riesgo por su tiempo de mantenimiento; 30 s es una decisión de diseño para no avisar de gestos (mirar el teclado, alcanzar algo) y evitar la fatiga de alertas. Aprobado por el especialista (2026-11-12).",
     "yawn_alert_count": 3,
     "yawn_alert_period_sec": 900,
     "_yawn_comment": "Un bostezo aislado no indica fatiga; se avisa con 3 en 15 min.",
@@ -128,8 +128,8 @@
 
   "sedentary": {
     "enabled": true,
-    "alert_after_min": 45,
-    "_alert_after_min_comment": "PROVISIONAL, a confirmar con el especialista. Minutos seguidos frente a la cámara sin una pausa activa antes de avisar. Las recomendaciones para trabajo sedentario de oficina proponen interrumpir el tiempo sentado cada 30-60 min; 45 min es el punto medio. Corresponde al OE 1.3.2.3 (fatiga estática).",
+    "alert_after_min": 30,
+    "_alert_after_min_comment": "Minutos seguidos frente a la cámara sin una pausa activa antes de avisar. 30 min (2026-11-12; antes 45, aprobado por el especialista y ajustado a la bibliografía): la guía de salud pública recomienda interrumpir la sedestación cada 30-60 min, la ADA cada 30 min, y las intervenciones con software de avisos en oficina usan pausas cada 30-60 min; McLean et al. (2001) hallaron menos molestias musculoesqueléticas con micropausas cada 20 min que cada 40 min. Corresponde al OE 1.3.2.3 (fatiga estática).",
     "repeat_every_min": 10,
     "_repeat_every_min_comment": "Si la persona sigue sin levantarse, el aviso se repite cada estos minutos.",
     "break_min_sec": 60,

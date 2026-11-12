@@ -697,6 +697,10 @@ class FusionFSM:
         """
         self.thresholds = thresholds
         self.on_alert = on_alert
+        # Se llama con un AlertEvent cuando una condición se confirma pero su
+        # tipo está en enfriamiento (no se avisa). Lo usa la bitácora.
+        self.on_suppressed: Optional[Callable[[AlertEvent], None]] = None
+        self._last_suppressed: dict[AlertType, float] = {}
         self.cooldown_sec = cooldown_sec
         self._clock = clock
 
@@ -1021,6 +1025,7 @@ class FusionFSM:
         self.blink_analyzer.reset()
         self._last_alert.clear()
         self._yawn_times.clear()
+        self._last_suppressed.clear()
         self._face_last_seen = None
         self._pose_last_seen = None
         # Tras una pausa de la app no se sabe si la persona se levantó: el
@@ -1278,6 +1283,8 @@ class FusionFSM:
 
         last = self._last_alert.get(alert_type)
         if last is not None and (now - last) < self._cooldown(alert_type):
+            self._note_suppressed(alert_type, metric_value, threshold,
+                                  duration_sec, message, now)
             return None  # Todavía en cooldown
 
         self._last_alert[alert_type] = now
@@ -1306,6 +1313,32 @@ class FusionFSM:
                 logger.error("Error en on_alert callback: %s", exc)
 
         return event
+
+    def _note_suppressed(self, alert_type: AlertType, metric_value: float,
+                         threshold: float, duration_sec: float, message: str,
+                         now: float) -> None:
+        """
+        Registra una detección durante el enfriamiento, como mucho una por
+        ventana del tipo: con la condición sostenida, el temporizador sigue
+        confirmándola en cada frame, y cada ventana completa cuenta como UNA
+        detección más (5 min de mala postura con ventana de 30 s = 10).
+        """
+        if self.on_suppressed is None:
+            return
+        timer = self._get_timer(alert_type)
+        gap = (timer.window_sec if timer is not None
+               else self._perclos_window_sec)
+        last = self._last_suppressed.get(alert_type)
+        if last is not None and now - last < max(gap, 1.0):
+            return
+        self._last_suppressed[alert_type] = now
+        event = AlertEvent(alert_type=alert_type, metric_value=metric_value,
+                           threshold=threshold, duration_sec=duration_sec,
+                           timestamp=time.time(), message=message)
+        try:
+            self.on_suppressed(event)
+        except Exception as exc:
+            logger.error("Error en on_suppressed: %s", exc)
 
     def _get_timer(self, alert_type: AlertType) -> Optional[ConditionTimer]:
         # DROWSINESS no tiene ConditionTimer: su "ventana" es la ventana móvil
@@ -1369,6 +1402,7 @@ class FusionFSM:
         self._timer_yawn.reset()
         self.blink_analyzer.reset()
         self._last_alert.clear()
+        self._last_suppressed.clear()
         # Tras una pausa puede ser otra persona o la cámara puede haberse
         # movido: la calibración del EAR se repite.
         if self._ear_calibrator is not None:

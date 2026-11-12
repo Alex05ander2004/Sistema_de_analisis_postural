@@ -133,3 +133,62 @@ class TestConfigAndTexts:
         ev = AlertEvent(alert_type=AlertType.CERVICAL_ANGLE, metric_value=20,
                         threshold=15, duration_sec=180)
         assert tn._detail(ev) == "Mantenida durante 3 min."
+
+
+class TestSuppressedDetections:
+    """Detecciones confirmadas durante el enfriamiento: se guardan aparte."""
+
+    def test_sustained_posture_logs_one_per_window(self):
+        fsm = FusionFSM(BASE, cooldown_sec=30)
+        fsm.set_alert_policy(POLICY)          # ventana 30 s, enfriamiento 300 s
+        sup = []
+        fsm.on_suppressed = sup.append
+        shown = _types(_feed(fsm, 0, 240, cervical_angle=40))
+        assert shown == [AlertType.CERVICAL_ANGLE]
+        # 1 aviso a los 30 s; después, una detección por cada 30 s más.
+        assert 6 <= len(sup) <= 8
+        assert {e.alert_type for e in sup} == {AlertType.CERVICAL_ANGLE}
+
+    def test_no_suppressed_without_condition(self):
+        fsm = FusionFSM(BASE, cooldown_sec=30)
+        sup = []
+        fsm.on_suppressed = sup.append
+        _feed(fsm, 0, 60, cervical_angle=40)
+        n = len(sup)
+        _feed(fsm, 60, 120, cervical_angle=5)
+        assert len(sup) == n
+
+    def test_logger_keeps_them_apart(self, tmp_path):
+        from src.storage.history_logger import HistoryLogger
+        from src.tools import export_study as ex
+        db = HistoryLogger(db_path=str(tmp_path / "h.db"))
+        db.start_session(participant_code="P01", study_phase="intervencion")
+        ev = AlertEvent(alert_type=AlertType.CERVICAL_ANGLE, metric_value=20,
+                        threshold=15, duration_sec=30)
+        db.log_event(ev)
+        db.log_event(ev, notified=False, suppressed=True)
+        db.log_event(ev, notified=False, suppressed=True)
+        summary = db.get_session_summary()
+        db.close()
+        ses = ex.read_sessions(tmp_path / "h.db")[0]
+        assert len(ses["events"]) == 1
+        assert len(ses["suppressed"]) == 2
+        assert all(e["notified"] == 0 for e in ses["suppressed"])
+        assert sum(summary["events_by_type"].values()) == 1
+
+    def test_old_database_gets_the_column(self, tmp_path):
+        import sqlite3
+        from src.storage.history_logger import HistoryLogger
+        p = tmp_path / "old.db"
+        con = sqlite3.connect(str(p))
+        con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, session_id "
+                    "TEXT, timestamp REAL, alert_type TEXT, metric_value REAL, "
+                    "threshold REAL, duration_sec REAL, message TEXT, "
+                    "created_at REAL)")
+        con.commit()
+        con.close()
+        HistoryLogger(db_path=str(p)).close()
+        con = sqlite3.connect(str(p))
+        cols = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+        con.close()
+        assert "suppressed" in cols

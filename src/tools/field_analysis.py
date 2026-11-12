@@ -421,6 +421,7 @@ class ParticipantData:
     code: str
     rows: List[dict] = field(default_factory=list)     # con _phase, _dur
     events: List[dict] = field(default_factory=list)   # con _phase
+    suppressed: List[dict] = field(default_factory=list)  # en enfriamiento
     reports: List[dict] = field(default_factory=list)
     versions: set = field(default_factory=set)
     hashes: set = field(default_factory=set)
@@ -449,6 +450,10 @@ def collect_field_data(sessions: Sequence[dict],
             e = dict(e)
             e["_phase"] = phase
             pd.events.append(e)
+        for e in ses.get("suppressed", []):
+            e = dict(e)
+            e["_phase"] = phase
+            pd.suppressed.append(e)
         if ses.get("version"):
             pd.versions.add(ses["version"])
         if ses.get("config_hash"):
@@ -477,6 +482,9 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
     ev_by_day: Dict[str, List[dict]] = defaultdict(list)
     for e in pd.events:
         ev_by_day[local_date(e["timestamp"])].append(e)
+    sup_by_day: Dict[str, int] = defaultdict(int)
+    for e in pd.suppressed:
+        sup_by_day[local_date(e["timestamp"])] += 1
 
     ts_all = [r["timestamp"] for r in pd.rows]
     out = []
@@ -525,6 +533,9 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
         row.update(br)
         row.update({
             "alertas_detectadas": len(evs),
+            # Episodios confirmados durante el enfriamiento: con ellos se
+            # cuentan TODAS las detecciones, no solo las que se avisaron.
+            "detecciones_en_enfriamiento": sup_by_day.get(day, 0),
             "alertas_mostradas": notified,
             "alertas_detectadas_por_hora": (len(evs) / hours
                                             if hours > 0 else None),

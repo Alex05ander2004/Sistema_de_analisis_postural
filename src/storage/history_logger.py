@@ -215,6 +215,13 @@ class HistoryLogger:
             self._conn.execute(
                 "ALTER TABLE events ADD COLUMN notified INTEGER")
             logger.info("events: columna 'notified' añadida.")
+        # suppressed: 1 = detección confirmada durante el enfriamiento de su
+        # tipo (no se avisó ni cuenta como alerta). 0 en bases antiguas.
+        if "suppressed" not in ev:
+            self._conn.execute(
+                "ALTER TABLE events ADD COLUMN suppressed INTEGER NOT NULL "
+                "DEFAULT 0")
+            logger.info("events: columna 'suppressed' añadida.")
 
     @contextmanager
     def _cursor(self):
@@ -291,7 +298,7 @@ class HistoryLogger:
     # ------------------------------------------------------------------
 
     def log_event(self, alert_event, condition: str = "",
-                  notified: bool = True) -> None:
+                  notified: bool = True, suppressed: bool = False) -> None:
         """
         Registra un AlertEvent del FSM en la tabla events.
 
@@ -303,6 +310,11 @@ class HistoryLogger:
             Condición del protocolo de estudio en el momento de la alerta.
         notified:
             False si la alerta se detectó pero NO se mostró (línea base).
+        suppressed:
+            True si la condición se confirmó durante el enfriamiento de su
+            tipo: no es una alerta, es una detección que no se avisó. Se
+            guarda para poder contar TODOS los episodios, no solo los
+            avisados.
         """
         if not self._session_id:
             logger.warning("log_event: no hay sesión activa, iniciando una automáticamente.")
@@ -313,8 +325,8 @@ class HistoryLogger:
                 """INSERT INTO events
                    (session_id, timestamp, alert_type, metric_value,
                     threshold, duration_sec, message, condition_label,
-                    notified)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    notified, suppressed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     self._session_id,
                     alert_event.timestamp,
@@ -324,7 +336,8 @@ class HistoryLogger:
                     alert_event.duration_sec,
                     alert_event.message,
                     condition or None,
-                    int(bool(notified)),
+                    int(bool(notified)) if not suppressed else 0,
+                    int(bool(suppressed)),
                 ),
             )
 
@@ -415,7 +428,8 @@ class HistoryLogger:
         # Conteo de eventos por tipo
         cur.execute(
             "SELECT alert_type, COUNT(*) as cnt FROM events "
-            "WHERE session_id = ? GROUP BY alert_type",
+            "WHERE session_id = ? AND COALESCE(suppressed, 0) = 0 "
+            "GROUP BY alert_type",
             (sid,),
         )
         events_by_type = {row["alert_type"]: row["cnt"] for row in cur.fetchall()}
@@ -573,7 +587,8 @@ class HistoryLogger:
                      participant_code: Optional[str] = None) -> List[dict]:
         """Eventos desde `since_ts` (tipo, hora y si se mostraron)."""
         sql = ("SELECT e.timestamp, e.alert_type, e.notified FROM events e "
-               "JOIN sessions s ON s.id = e.session_id WHERE e.timestamp >= ?")
+               "JOIN sessions s ON s.id = e.session_id WHERE e.timestamp >= ? "
+               "AND COALESCE(e.suppressed, 0) = 0")
         args: list = [since_ts]
         if participant_code:
             sql += " AND s.participant_code = ?"

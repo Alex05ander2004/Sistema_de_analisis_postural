@@ -159,13 +159,18 @@ avisa"*. A partir del día 6 de uso aparecen los avisos.
 
 **Desde la intervención, además:**
 
-- **Aviso de pausa activa** (OE 1.3.2.3): tras 45 min seguidos frente a la
+- **Aviso de pausa activa** (OE 1.3.2.3): tras 30 min seguidos frente a la
   cámara sin levantarse, la app avisa y repite cada 10 min mientras siga
   sentado. Levantarse ≥ 60 s reinicia la cuenta. En la línea base se detecta
   igual pero en silencio, así que el exportador compara la respuesta:
   `pct_pausa_tras_aviso_inactividad` = % de avisos seguidos de una pausa en
   los 10 min siguientes. Valores en `config/thresholds.json → sedentary`
-  (45 min es provisional: **confirmar con el especialista**).
+  (30 min: dentro del rango de 30–60 min de la bibliografía; el especialista
+  aprobó la política de avisos).
+- **Detecciones en enfriamiento:** si una condición se confirma mientras su
+  tipo está en el tiempo de espera, no se avisa pero se guarda en `events`
+  con `suppressed = 1` (una por ventana). El exportador las cuenta aparte
+  (`detecciones_en_enfriamiento`) y no las mezcla con las alertas.
 - **Mi historial** (OE 1.3.2.5): botón en la cabecera con los últimos 14 días
   (% del tiempo en buena postura, horas medidas, pausas por hora, tramo más
   largo sin levantarse y avisos). **En la línea base está bloqueado**: ver su
@@ -284,8 +289,9 @@ sesión tiene un identificador único.
   debe decir *"Otra aplicación está usando la cámara…"* → salir de la
   llamada → en ≤ 20 s la app debe volver a mostrar imagen y medir (en el log:
   `Cámara: shared → ok`).
-- [ ] **2c. Teams y Zoom de escritorio:** repetir 2a/2b (pueden comportarse
-  distinto que Meet en el navegador).
+- [x] **2c. Teams y Zoom de escritorio** (2026-11-12): la cámara no puede
+  usarse a la vez en la app y en la videollamada. Se declara como limitación
+  (§12); el participante pausa o cede la cámara durante la llamada.
 
 - [ ] **3. Suspender y volver.** Con la app monitoreando, cierra la tapa del
   portátil 2 minutos y ábrela. La app debe volver a medir sola (en el log:
@@ -352,5 +358,10 @@ ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
 - El número de alertas depende del enfriamiento configurado; por eso el
   resultado principal es la exposición.
 - La distancia es una estimación (±8 % por el ancho de hombros).
+- La cámara web no puede compartirse: Windows la entrega a una sola
+  aplicación a la vez. Durante las videollamadas el sistema no mide (con
+  «Ceder cámara» o «Pausar»), y ese tiempo queda como «sin datos», no como
+  ausencia. Probado con Meet (cede y vuelve a medir solo); con Teams y Zoom
+  de escritorio tampoco es posible el uso simultáneo.
 - Umbrales provisionales (Δθc, ratio 0.65 del EAR, MAR 0.45) sin validación
   clínica; un solo experto (N = 1) para los criterios clínicos.

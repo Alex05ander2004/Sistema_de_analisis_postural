@@ -257,6 +257,11 @@ def read_sessions(db_path: Path, source: Optional[str] = None) -> List[dict]:
             for e in events:
                 e.setdefault("condition_label", None)
                 e.setdefault("notified", None)
+                e.setdefault("suppressed", 0)
+            # Las detecciones en enfriamiento NO son alertas: van aparte,
+            # para que ningún indicador de alertas cambie de significado.
+            suppressed = [e for e in events if e.get("suppressed")]
+            events = [e for e in events if not e.get("suppressed")]
             sessions.append({
                 "fuente": source or db_path.name,
                 "id": s["id"], "participante": code,
@@ -268,7 +273,7 @@ def read_sessions(db_path: Path, source: Optional[str] = None) -> List[dict]:
                             else None) or "",
                 "config_hash": (s["config_hash"] if "config_hash" in cols
                                 else None) or "",
-                "rows": rows, "events": events,
+                "rows": rows, "events": events, "suppressed": suppressed,
                 "_mcols": mcols, "_ecols": ecols,
             })
         return sessions
