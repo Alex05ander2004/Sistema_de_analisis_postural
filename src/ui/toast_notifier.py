@@ -145,11 +145,28 @@ _TOAST_TITLES = {
 _TOAST_ACTIONS = {
     "cervical_angle":     "Endereza la cabeza sobre los hombros.",
     "shoulder_asymmetry": "Nivela los hombros y relájalos.",
-    "eye_fatigue":        "Regla 20-20-20: mira a 6 m durante 20 s.",
-    "yawn":               "Levántate y camina un par de minutos.",
+    "eye_fatigue":        "Descansa la vista: mira algo lejano (una ventana, el fondo de la sala) durante 20 s y parpadea.",
+    "yawn":               "Varios bostezos seguidos: levántate, camina un par de minutos y toma agua.",
     "drowsiness":         "Interrumpe la tarea y descansa.",
     "sedentary":          "Ponte de pie y camina un par de minutos.",
 }
+
+
+def _detail(alert_event) -> str:
+    """Segunda línea del aviso, en palabras del usuario."""
+    t = alert_event.alert_type.value
+    if t == "sedentary":
+        return f"Llevas {alert_event.metric_value:.0f} min sin levantarte."
+    if t == "yawn" and alert_event.threshold > 1:
+        return f"{alert_event.metric_value:.0f} bostezos en poco tiempo."
+    if t == "drowsiness":
+        return (f"Ojos cerrados el {alert_event.metric_value * 100:.0f} % "
+                "del último minuto.")
+    if t == "eye_fatigue":
+        return f"Ojos cerrados {alert_event.duration_sec:.0f} s seguidos."
+    d = alert_event.duration_sec
+    return (f"Mantenida durante {d / 60:.0f} min." if d >= 90
+            else f"Mantenida durante {d:.0f} s.")
 
 
 # Tipos cuyo toast permanece en pantalla más tiempo (~25 s frente a ~7 s).
@@ -258,7 +275,7 @@ class ToastNotifier:
             toast = Notification(
                 app_id=_APP_ID,
                 title=title,
-                msg=f"{action}\nDetectado durante {alert_event.duration_sec:.0f} s.",
+                msg=f"{action}\n{_detail(alert_event)}",
                 # La somnolencia es aguda: el aviso se queda más tiempo.
                 duration="long" if alert_type in _LONG_TOAST_TYPES else "short",
                 icon=str(_ICON_PATH) if _ICON_PATH.exists() else "",

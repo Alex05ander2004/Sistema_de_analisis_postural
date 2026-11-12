@@ -69,7 +69,7 @@ _PAUSE_INSTRUCTIONS = {
         "Si el malestar persiste, considera consultar a un fisioterapeuta o especialista.",
     ],
     "eye_fatigue": [
-        "Aplica la regla 20-20-20: mira a 6 metros durante 20 segundos.",
+        "Sin levantarte: mira algo lejano (una ventana, el fondo de la sala) durante 20 segundos.",
         "Parpadea conscientemente 10 veces.",
         "Cierra los ojos y descansa 30 segundos.",
     ],

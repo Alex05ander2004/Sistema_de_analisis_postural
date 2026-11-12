@@ -351,6 +351,8 @@ class InferenceThread(threading.Thread):
             on_alert=self._handle_alert,
             cooldown_sec=ui_cfg.get("alert_cooldown_sec", 30),
         )
+        self._alert_policy = thresholds.get("alert_policy") or None
+        self._apply_alert_policy()
 
         storage_cfg = thresholds.get("storage", {})
         self._db = HistoryLogger(
@@ -632,9 +634,18 @@ class InferenceThread(threading.Thread):
                 self._mode = "monitoring"
                 logger.info("Modo: monitoreando.")
 
+    def _apply_alert_policy(self) -> None:
+        """
+        Laboratorio (validación): política de detección, para medir tramo a
+        tramo. Campo y uso normal: política de aviso, que no satura.
+        """
+        self._fsm.set_alert_policy(
+            None if self._study_mode == MODE_LAB else self._alert_policy)
+
     def _open_session(self, extra_note: str = "") -> None:
         """Decide la fase y abre la sesión en la bitácora."""
         self._decide_phase()
+        self._apply_alert_policy()
         notes = self._session_notes() + extra_note
         self._db.start_session(notes=notes,
                                participant_code=self._participant,

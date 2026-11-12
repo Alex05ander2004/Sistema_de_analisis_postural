@@ -767,6 +767,18 @@ class FusionFSM:
 
         # Cooldowns por tipo de alerta (instante monótono del último disparo)
         self._last_alert: dict[AlertType, float] = {}
+        self._cooldown_by_type: dict[AlertType, float] = {}
+
+        # Bostezos: un bostezo aislado no es fatiga. Con yawn_alert_count > 1
+        # se avisa solo al acumular ese número de bostezos en el periodo.
+        self._yawn_times: Deque[float] = deque()
+        self._yawn_count = 1
+        self._yawn_period = 900.0
+
+        # Valores base (detección, modo laboratorio); set_alert_policy() los
+        # cambia por la política de aviso del uso diario.
+        self._base_windows = (self._timer_cervical.window_sec,
+                              self._timer_shoulder.window_sec)
 
         # Umbrales
         self._cervical_max = post.get("cervical_angle_max_deg", 30.0)
@@ -850,6 +862,51 @@ class FusionFSM:
             self.blink_analyzer.reset()
             self._timer_ear.reset()
             logger.info("Calibración de EAR reiniciada.")
+
+    # ------------------------------------------------------------------
+    # Política de aviso
+    # ------------------------------------------------------------------
+
+    def set_alert_policy(self, policy: Optional[dict]) -> None:
+        """
+        Aplica la política de AVISO del uso diario, o vuelve a la de
+        detección (None).
+
+        Detección (validación en laboratorio): cada condición se avisa en
+        cuanto se confirma (ventanas cortas, enfriamiento global), para medir
+        tramo a tramo si el sistema la reconoce.
+
+        Aviso (campo y uso normal): solo se avisa de lo que es un riesgo para
+        la persona: una postura mantenida (no un gesto de unos segundos),
+        varios bostezos (no uno), y con un enfriamiento por tipo, para no
+        saturar al usuario. Ver config/thresholds.json -> alert_policy.
+        """
+        cerv, shou = self._base_windows
+        self._cooldown_by_type = {}
+        self._yawn_count, self._yawn_period = 1, 900.0
+        if policy:
+            cerv = float(policy.get("cervical_alert_window_sec", cerv))
+            shou = float(policy.get("shoulder_alert_window_sec", shou))
+            self._yawn_count = max(1, int(policy.get("yawn_alert_count", 1)))
+            self._yawn_period = float(policy.get("yawn_alert_period_sec", 900.0))
+            for name, sec in (policy.get("cooldown_sec") or {}).items():
+                try:
+                    self._cooldown_by_type[AlertType(name)] = float(sec)
+                except ValueError:
+                    logger.warning("alert_policy.cooldown_sec: tipo '%s' "
+                                   "desconocido.", name)
+        self._timer_cervical.window_sec = cerv
+        self._timer_shoulder.window_sec = shou
+        self._timer_cervical.reset()
+        self._timer_shoulder.reset()
+        self._yawn_times.clear()
+        logger.info("Política de alertas: %s (cervical %.0f s, hombros %.0f s, "
+                    "%d bostezo(s)/%.0f min).",
+                    "aviso" if policy else "detección", cerv, shou,
+                    self._yawn_count, self._yawn_period / 60.0)
+
+    def _cooldown(self, alert_type: AlertType) -> float:
+        return self._cooldown_by_type.get(alert_type, self.cooldown_sec)
 
     def _cervical_condition(self, metrics: SensorMetrics, now: float):
         """
@@ -963,6 +1020,7 @@ class FusionFSM:
         self._timer_yawn.reset()
         self.blink_analyzer.reset()
         self._last_alert.clear()
+        self._yawn_times.clear()
         self._face_last_seen = None
         self._pose_last_seen = None
         # Tras una pausa de la app no se sabe si la persona se levantó: el
@@ -1138,17 +1196,7 @@ class FusionFSM:
 
             if self._timer_yawn.update(
                     metrics.mouth_opening >= self._mouth_threshold, now):
-                alert = self._try_fire_alert(
-                    AlertType.YAWN,
-                    metric_value=metrics.mouth_opening,
-                    threshold=self._mouth_threshold,
-                    duration_sec=self._timer_yawn.elapsed(now),
-                    now=now,
-                    message=(
-                        f"Bostezo detectado: apertura={metrics.mouth_opening:.2f} "
-                        f">= {self._mouth_threshold}"
-                    ),
-                )
+                alert = self._on_yawn(metrics, now)
                 if alert:
                     generated.append(alert)
 
@@ -1187,6 +1235,34 @@ class FusionFSM:
 
         return generated
 
+    def _on_yawn(self, metrics: SensorMetrics,
+                 now: float) -> Optional[AlertEvent]:
+        """Un bostezo confirmado; avisa al llegar a yawn_alert_count."""
+        dur = self._timer_yawn.elapsed(now)
+        if self._yawn_count <= 1:
+            return self._try_fire_alert(
+                AlertType.YAWN,
+                metric_value=metrics.mouth_opening,
+                threshold=self._mouth_threshold,
+                duration_sec=dur, now=now,
+                message=(f"Bostezo detectado: apertura={metrics.mouth_opening:.2f} "
+                         f">= {self._mouth_threshold}"))
+        self._timer_yawn.reset()        # el mismo bostezo no cuenta dos veces
+        self._yawn_times.append(now)
+        while self._yawn_times and now - self._yawn_times[0] > self._yawn_period:
+            self._yawn_times.popleft()
+        n = len(self._yawn_times)
+        if n < self._yawn_count:
+            return None
+        alert = self._try_fire_alert(
+            AlertType.YAWN, metric_value=float(n),
+            threshold=float(self._yawn_count), duration_sec=dur, now=now,
+            message=(f"{n} bostezos en los últimos "
+                     f"{self._yawn_period / 60.0:.0f} min"))
+        if alert:
+            self._yawn_times.clear()
+        return alert
+
     # ------------------------------------------------------------------
 
     def _try_fire_alert(self, alert_type: AlertType,
@@ -1201,7 +1277,7 @@ class FusionFSM:
             now = self._clock()
 
         last = self._last_alert.get(alert_type)
-        if last is not None and (now - last) < self.cooldown_sec:
+        if last is not None and (now - last) < self._cooldown(alert_type):
             return None  # Todavía en cooldown
 
         self._last_alert[alert_type] = now

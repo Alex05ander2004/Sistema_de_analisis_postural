@@ -107,6 +107,25 @@
     "_face_draw_mode_comment": "'metrics' dibuja solo los 12 puntos de ojos y 4 de boca que entran en el EAR/MAR (~16 primitivas). 'contours' dibuja los contornos faciales (~130 líneas). 'tesselation' dibuja la malla completa (~2600 segmentos por frame): cuesta más que la propia inferencia de Face Mesh y no aporta ninguna información a las métricas — usar solo para capturas de pantalla del documento."
   },
 
+  "alert_policy": {
+    "_comment": "Política de AVISO del uso diario (modo campo y uso sin estudio). En modo laboratorio (validación) NO se aplica: se usan las ventanas de 'postural'/'fatigue' y ui.alert_cooldown_sec, para medir la DETECCIÓN tramo a tramo. Motivo (2026-11-12): con ventanas de 5-8 s y enfriamiento de 30 s un usuario con mala postura sostenida recibía hasta 2 avisos por minuto de cada tipo, la receta de la fatiga de alertas. Valores de ingeniería, a confirmar con el especialista.",
+    "cervical_alert_window_sec": 30,
+    "shoulder_alert_window_sec": 30,
+    "_windows_comment": "Solo se avisa de una postura MANTENIDA. El riesgo musculoesquelético viene de la carga estática sostenida (ISO 11226 evalúa tiempos de mantenimiento, no instantes); 5 s capturaban gestos como mirar el teclado o alcanzar algo.",
+    "yawn_alert_count": 3,
+    "yawn_alert_period_sec": 900,
+    "_yawn_comment": "Un bostezo aislado no indica fatiga; se avisa con 3 en 15 min.",
+    "cooldown_sec": {
+      "cervical_angle": 300,
+      "shoulder_asymmetry": 300,
+      "eye_fatigue": 120,
+      "drowsiness": 120,
+      "yawn": 600,
+      "sedentary": 0
+    },
+    "_cooldown_comment": "Segundos mínimos entre dos avisos del MISMO tipo. Postura: 5 min (corregir lleva tiempo y repetir antes no aporta). Ojos y somnolencia: 2 min (riesgo agudo). La inactividad tiene su propia repetición (sedentary.repeat_every_min)."
+  },
+
   "sedentary": {
     "enabled": true,
     "alert_after_min": 45,
