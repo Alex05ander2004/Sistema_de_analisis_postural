@@ -47,7 +47,10 @@ a = Analysis(
     # detecta ("No module named numpy._core._exceptions" al arrancar).
     hiddenimports=["pystray._win32", "winotify", "psutil"]
     + collect_submodules("numpy._core"),
-    excludes=["tkinter", "pytest", "IPython", "notebook", "PyInstaller"],
+    # scipy (y jax, que arrastra) solo los usa la prueba de Wilcoxon del
+    # exportador del investigador; la app no la ejecuta (~300 MB menos).
+    excludes=["tkinter", "pytest", "IPython", "notebook", "PyInstaller",
+              "scipy", "jax", "jaxlib"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

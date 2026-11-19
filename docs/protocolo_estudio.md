@@ -12,8 +12,8 @@
 | Parte | Cuándo | Dónde | Duración | Qué mide |
 |---|---|---|---|---|
 | **A. Validación** | Día 0, al instalar | Equipo del participante, con el investigador presente | ~25 min | ¿El sistema **acierta**? Sensibilidad, especificidad y precisión (matriz de confusión) |
-| **B1. Línea base** | Días de uso 1 a 5, 7 o 9 (sorteado por participante) | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
-| **B2. Intervención** | Desde el día 6, 8 o 10 hasta el 15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
+| **B1. Línea base** | Días de uso 1 a 3, 5 o 7 (sorteado por participante) | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
+| **B2. Intervención** | Desde el día 4, 6 u 8 hasta el 15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
 | **Control** | Días 1–15, sin avisos nunca | Igual | ≥ 2 h/día | Qué cambia solo con el tiempo y por saberse observado |
 | **C. Cierre** | Al terminar | — | 10 min | Exportar los datos, cuestionarios de salida |
 
@@ -27,9 +27,16 @@ parte A**. El **efecto del sistema** solo puede salir de la parte B.
   (altura de la pantalla, distancia, pausas): es el «tratamiento
   tradicional».
 - **Grupo de intervención:** recomendaciones + software. Cada participante
-  empieza a recibir avisos en un día distinto: tras **5, 7 o 9 días** de
-  línea base, **sorteados** (con dado o random.org; anotar el resultado antes
-  de instalar). Se configura en **⚙ Estudio → Días de línea base**.
+  empieza a recibir avisos en un día distinto: tras **3, 5 o 7 días** de
+  línea base (avisos desde el día de uso 4, 6 u 8), **sorteados** en partes
+  iguales (con dado o random.org; anotar el resultado antes de instalar). Se
+  configura en **⚙ Estudio → Días de línea base**.
+- **Por qué 3/5/7 y no 5/7/9:** con fines de
+  semana y días cortos, quien empezaba los avisos el día 10 no alcanzaba los
+  6 días válidos de intervención que exige el análisis en 15 días de uso.
+  Con 3/5/7, el último grupo tiene unos 8 días de intervención. La línea base
+  de 3 días cumple el estándar de Kratochwill et al. (2010) «con reservas»
+  (3 datos por fase; 5 lo cumplen sin reservas): declararlo.
 - **Grupo de control:** solo recomendaciones. Usa la app los 15 días en fase
   «control»: mide, nunca avisa y «Mi historial» queda bloqueado. Se configura
   en **⚙ Estudio → Grupo: Control**.
@@ -38,31 +45,45 @@ parte A**. El **efecto del sistema** solo puede salir de la parte B.
   explica, porque los inicios están en días distintos. El control muestra el
   cambio sin avisos. Tres inicios distintos cumplen el criterio de calidad de
   Kratochwill et al. (2010) para diseños de caso único.
-- **Mínimo:** 3 de intervención (uno por día de inicio) y 1 de control. Con
-  más participantes: repartir los de intervención en partes iguales entre los
-  tres días de inicio y dejar aproximadamente 1 de cada 5 en el control.
+- **Tamaño:** **9 de intervención (3 por día de inicio) y 2 de control**
+  que terminen el estudio; reclutar 12–13 por los abandonos. La prueba de
+  Wilcoxon exacta necesita **al menos 6 participantes válidos** del grupo
+  de intervención para poder dar p < 0.05; con 9 queda margen. Si se
+  consiguen más, repartirlos igual entre los tres días de inicio y dejar
+  aproximadamente 1 de cada 5 en el control.
 
 ---
 
 ## 1. Muestra
 
-**25 participantes que terminen el estudio. Recluta 28–30**, porque en un
-seguimiento de 15 días siempre hay abandonos (equipo averiado, viaje, pérdida
-de interés).
+**Mínimo: 11 participantes que terminen el estudio (9 de intervención, 3
+por cada día de inicio, y 2 de control). Recluta 12–13**, porque en un
+seguimiento de 15 días de uso (~3 semanas) siempre hay abandonos (equipo
+averiado, viaje, pérdida de interés). Si se consiguen más, mejor: hasta 25,
+repartidos igual entre los tres días de inicio y ~1 de cada 5 en el control.
 
 - **Inclusión:** adultos que trabajen o estudien frente a una computadora con
   Windows al menos 2 h diarias, con cámara web (integrada o externa).
 - **Exclusión:** patologías que el alcance excluye (escoliosis, hipercifosis,
   collarín, lesión cervical reciente).
+- **Exclusión (criterio del especialista, 2026-11-19):** personas con
+  **10 años o más** de trabajo diario frente a una computadora. Con esa
+  antigüedad la postura «natural» ya está adaptada (suele ser una cabeza
+  adelantada estable), y el sistema la tomaría como postura neutra al
+  calibrar: la desviación medida no reflejaría el riesgo real. Preguntarlo
+  al reclutar: *«¿Cuántos años llevas trabajando o estudiando a diario
+  frente a una computadora?»*
 - **Equipo:** Windows 10/11. Comprobar en la instalación que la app alcanza al
   menos **10 FPS** (se ve en la ventana). Por debajo, la medición se degrada y
   ese equipo no sirve.
 
-Para la **precisión** (parte A), 25 personas × 17 tramos = ~425 tramos, con un
-margen de ±3 puntos en la precisión global y de ±6–7 puntos por condición. Para
-el **efecto** (parte B), 25 pares base/intervención bastan para una prueba
-pareada (Wilcoxon) con efectos medianos. **No es una muestra para generalizar a
-la población** y así debe redactarse.
+Para la **precisión** (parte A), 11 personas × 17 tramos = ~187 tramos, con un
+margen de unos ±4 puntos en la precisión global y de ±9 puntos por condición
+(con 25 personas: ±3 y ±6–7). Para el **efecto** (parte B), el análisis
+principal es por participante (figura de línea base múltiple y NAP); la
+prueba de Wilcoxon de grupo necesita al menos 6 participantes de
+intervención válidos. **No es una muestra para generalizar a la población**
+y así debe redactarse.
 
 ---
 
@@ -83,13 +104,13 @@ jornada completa; el mínimo, 2 h con un bloque de al menos 1 h.
 | Criterio | Valor | Clave en la configuración |
 |---|---|---|
 | Día válido | ≥ 120 min de seguimiento **y** un bloque continuo ≥ 60 min | `valid_day_min_minutes`, `valid_day_min_block_minutes` |
-| Día que cuenta para la línea base | ≥ 60 min de seguimiento | `baseline_min_minutes` |
-| Duración de la línea base | 5 días que cuenten | `baseline_days` |
+| Día que cuenta para la línea base | ≥ 120 min de seguimiento (igual que un día válido) | `baseline_min_minutes` |
+| Duración de la línea base | 3, 5 o 7 días que cuenten, según el sorteo (5 por defecto) | `dias_linea_base` del perfil; `baseline_days` |
 | Participante válido para la comparación | ≥ 3 días válidos de base y ≥ 6 de intervención | `analysis_min_valid_days_baseline`, `analysis_min_valid_days_intervention` |
 | Días previstos | 15 días de uso (~3 semanas laborables) | `planned_days` |
 
 **Por qué "días de uso" y no días de calendario.** La app pasa de línea base a
-intervención cuando se completan 5 días con ≥ 60 min de uso, no a los 5 días
+intervención cuando se completan sus días de línea base con ≥ 120 min de uso, no a esos días
 de calendario: un fin de semana o un día con 10 minutos de uso dejarían la línea
 base vacía. La fase se decide al iniciar cada sesión con los días **anteriores**,
 así que un mismo día nunca mezcla fases.
@@ -100,7 +121,7 @@ seguimiento: eso es justamente una pausa activa, y se mide.
 
 ---
 
-## 3. Antes de empezar con los 25
+## 3. Antes de empezar con los participantes
 
 | # | Qué | Cómo |
 |---|---|---|
@@ -176,7 +197,8 @@ Bostezos y cierres de ojos son **simulados**: decláralo como limitación.
 
 **Durante los primeros días (línea base) la app no avisa.** Es intencionado y
 el participante lo sabe: la barra muestra *"Línea base: la app mide pero no
-avisa"*. A partir del día 6 de uso aparecen los avisos.
+avisa"*. Los avisos aparecen desde el día de uso 4, 6 u 8, según el sorteo
+(el grupo de control nunca los recibe).
 
 **Desde la intervención, además:**
 
@@ -369,7 +391,16 @@ ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
 
 ## 12. Limitaciones a declarar en la tesis
 
-- Muestra de 25 personas: no generalizable a la población.
+- Se excluyó a quienes llevan 10 años o más trabajando a diario frente a la
+  computadora (criterio del especialista): su postura natural ya está
+  adaptada y la calibración la tomaría como neutra. Los resultados no se
+  extienden a esa población, que es precisamente la de mayor exposición
+  acumulada; para ella haría falta una referencia externa (p. ej. el ángulo
+  craneovertebral medido de perfil por un especialista) en lugar de la
+  postura neutra de cada persona.
+- Muestra pequeña (11–25 personas): no generalizable a la población. La
+  línea base de 3 días del primer grupo cumple el estándar de diseños de caso
+  único solo «con reservas» (Kratochwill et al., 2010).
 - Precisión medida con condiciones **simuladas** (parte A); en casa no hay
   verdad de terreno.
 - Δθc es una desviación **relativa** a la postura neutra de cada día, no el

@@ -29,7 +29,10 @@ Estudio de campo (sesiones linea_base / intervencion), ver field_analysis.py:
                              frente a última hora y autorreporte.
   resumen_participantes.csv  Una fila por participante: días válidos y media
                              de cada indicador en línea base e intervención,
-                             con su diferencia (lista para la prueba pareada).
+                             con su diferencia y el NAP.
+  prueba_grupo.csv           Wilcoxon de rangos con signo y r biserial por
+                             indicador (grupo de intervención, válidos).
+  reportes/linea_base_multiple.html  Figura de línea base múltiple.
   perfil_horario.csv         Indicadores por hora del día y fase.
   reportes/reporte_<P>.html  Reporte por participante para el especialista.
   detalle/metricas_<P>.csv   Filas de metrics_log de campo, un archivo por
@@ -231,8 +234,16 @@ def read_self_reports(db_path: Path) -> List[dict]:
         con.close()
 
 
-def read_sessions(db_path: Path, source: Optional[str] = None) -> List[dict]:
-    """Sesiones de una base, con sus métricas y eventos."""
+def read_sessions(db_path: Path, source: Optional[str] = None,
+                  ids: Optional[set] = None,
+                  with_rows: bool = True) -> List[dict]:
+    """
+    Sesiones de una base, con sus métricas y eventos.
+
+    with_rows=False lee solo los metadatos y el número de filas y eventos
+    (n_rows, n_events): sirve para deduplicar sin cargar millones de filas.
+    ids limita la lectura a esas sesiones.
+    """
     if not db_path.exists():
         raise FileNotFoundError(f"Base de datos no encontrada: {db_path}")
     con = sqlite3.connect(str(db_path))
@@ -244,8 +255,33 @@ def read_sessions(db_path: Path, source: Optional[str] = None) -> List[dict]:
         ecols = {r["name"] for r in con.execute("PRAGMA table_info(events)")}
 
         sessions = []
-        for s in con.execute("SELECT * FROM sessions ORDER BY started_at"):
+        for s in con.execute("SELECT * FROM sessions ORDER BY started_at"
+                             ).fetchall():
+            if ids is not None and s["id"] not in ids:
+                continue
             code = (s["participant_code"] if has_code else None) or NO_CODE
+            meta = {
+                "fuente": source or db_path.name,
+                "id": s["id"], "participante": code,
+                "inicio": s["started_at"], "fin": s["ended_at"],
+                "notas": s["notes"] or "",
+                "fase": (s["study_phase"] if "study_phase" in cols
+                         else None) or "",
+                "version": (s["app_version"] if "app_version" in cols
+                            else None) or "",
+                "config_hash": (s["config_hash"] if "config_hash" in cols
+                                else None) or "",
+                "_db": db_path,
+            }
+            if not with_rows:
+                meta["n_rows"] = con.execute(
+                    "SELECT COUNT(*) FROM metrics_log WHERE session_id=?",
+                    (s["id"],)).fetchone()[0]
+                meta["n_events"] = con.execute(
+                    "SELECT COUNT(*) FROM events WHERE session_id=?",
+                    (s["id"],)).fetchone()[0]
+                sessions.append(meta)
+                continue
             rows = [dict(r) for r in con.execute(
                 "SELECT * FROM metrics_log WHERE session_id=? ORDER BY timestamp",
                 (s["id"],))]
@@ -262,20 +298,10 @@ def read_sessions(db_path: Path, source: Optional[str] = None) -> List[dict]:
             # para que ningún indicador de alertas cambie de significado.
             suppressed = [e for e in events if e.get("suppressed")]
             events = [e for e in events if not e.get("suppressed")]
-            sessions.append({
-                "fuente": source or db_path.name,
-                "id": s["id"], "participante": code,
-                "inicio": s["started_at"], "fin": s["ended_at"],
-                "notas": s["notes"] or "",
-                "fase": (s["study_phase"] if "study_phase" in cols
-                         else None) or "",
-                "version": (s["app_version"] if "app_version" in cols
-                            else None) or "",
-                "config_hash": (s["config_hash"] if "config_hash" in cols
-                                else None) or "",
-                "rows": rows, "events": events, "suppressed": suppressed,
-                "_mcols": mcols, "_ecols": ecols,
-            })
+            meta.update({"rows": rows, "events": events,
+                         "suppressed": suppressed,
+                         "_mcols": mcols, "_ecols": ecols})
+            sessions.append(meta)
         return sessions
     finally:
         con.close()
@@ -525,11 +551,15 @@ def _dedupe_sessions(sessions: List[dict]) -> Tuple[List[dict], int]:
     Una sesión por id. Si llega repetida (zip intermedio y zip final del
     mismo participante), se queda la copia con más filas: es la más completa.
     """
+    def size(s):
+        n_rows = s["n_rows"] if "n_rows" in s else len(s["rows"])
+        n_ev = s["n_events"] if "n_events" in s else len(s["events"])
+        return (n_rows, n_ev, s["fin"] or 0)
+
     best: Dict[str, dict] = {}
     for s in sessions:
         cur = best.get(s["id"])
-        if cur is None or (len(s["rows"]), len(s["events"]), s["fin"] or 0) > \
-                (len(cur["rows"]), len(cur["events"]), cur["fin"] or 0):
+        if cur is None or size(s) > size(cur):
             best[s["id"]] = s
     dup = len(sessions) - len(best)
     return sorted(best.values(), key=lambda s: s["inicio"]), dup
@@ -553,18 +583,61 @@ def export(db_paths: Sequence[Path], out_dir: Path, config_path: Path,
     cfg_all = load_config(config_path)
     fcfg = fa.FieldConfig.from_thresholds(cfg_all)
 
-    sessions: List[dict] = []
-    self_reports: List[dict] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        for db, source in expand_inputs(db_paths, Path(tmp)):
-            sessions.extend(read_sessions(db, source))
-            self_reports.extend(read_self_reports(db))
-    sessions, duplicated = _dedupe_sessions(sessions)
-    self_reports = _dedupe_reports(self_reports)
-
     out_dir.mkdir(parents=True, exist_ok=True)
     summaries, all_segments, event_rows, detail = [], [], [], []
 
+    with tempfile.TemporaryDirectory() as tmp:
+        # Pasada 1: solo metadatos. Un estudio de campo real son millones de
+        # filas (8 personas x 15 días x 5 h = 2.2 M); cargarlas todas a la
+        # vez agotaba la memoria de una laptop. Se deduplica con los
+        # metadatos y luego se procesa un participante cada vez.
+        metas: List[dict] = []
+        self_reports: List[dict] = []
+        for db, source in expand_inputs(db_paths, Path(tmp)):
+            metas.extend(read_sessions(db, source, with_rows=False))
+            self_reports.extend(read_self_reports(db))
+        metas, duplicated = _dedupe_sessions(metas)
+        self_reports = _dedupe_reports(self_reports)
+        field_exp = _FieldExport(
+            self_reports, out_dir, fcfg,
+            planned_days=int(cfg_all.get("study", {}).get(
+                "field", {}).get("planned_days", 15)))
+
+        by_code: Dict[str, List[dict]] = {}
+        for m in metas:
+            by_code.setdefault(m["participante"], []).append(m)
+
+        for code in sorted(by_code):
+            # Pasada 2: las filas de ESTE participante.
+            by_db: Dict[Path, set] = {}
+            for m in by_code[code]:
+                by_db.setdefault(m["_db"], set()).add(m["id"])
+            sources = {m["_db"]: m["fuente"] for m in by_code[code]}
+            sessions = []
+            for db, ids in by_db.items():
+                sessions.extend(read_sessions(db, sources[db], ids=ids))
+            sessions.sort(key=lambda s: s["inicio"])
+            _export_lab_sessions(sessions, conditions, dev_threshold, grace,
+                                 min_seconds, summaries, all_segments,
+                                 event_rows, detail)
+            field_exp.add(sessions)
+            del sessions
+
+    _write_lab_outputs(out_dir, conditions, summaries, all_segments,
+                       event_rows, detail)
+    field = field_exp.finish(reports)
+    confusion = confusion_table(all_segments, conditions)
+    return {"sessions": summaries, "segments": all_segments,
+            "confusion": confusion, "events": event_rows,
+            "field": field, "duplicated_sessions": duplicated,
+            "out_dir": out_dir}
+
+
+def _export_lab_sessions(sessions, conditions, dev_threshold, grace,
+                         min_seconds, summaries, all_segments, event_rows,
+                         detail) -> None:
+    """Tramos, resumen por sesión, eventos y detalle (sesiones de un
+    participante)."""
     for ses in sessions:
         rows, events = ses["rows"], ses["events"]
         period = sample_period(rows)
@@ -629,6 +702,10 @@ def export(db_paths: Sequence[Path], out_dir: Path, config_path: Path,
                 d[c] = r.get(c)
             detail.append(d)
 
+
+
+def _write_lab_outputs(out_dir, conditions, summaries, all_segments,
+                       event_rows, detail) -> None:
     confusion = confusion_table(all_segments, conditions)
 
     write_csv(out_dir / "resumen_sesiones.csv", summaries)
@@ -642,62 +719,74 @@ def export(db_paths: Sequence[Path], out_dir: Path, config_path: Path,
               ["fuente", "sesion", "participante", "hora", "t_rel_s",
                "condicion"] + METRIC_COLUMNS)
 
-    field = export_field(sessions, self_reports, out_dir, fcfg,
-                         planned_days=int(cfg_all.get("study", {}).get(
-                             "field", {}).get("planned_days", 15)),
-                         reports=reports)
 
-    return {"sessions": summaries, "segments": all_segments,
-            "confusion": confusion, "events": event_rows,
-            "field": field, "duplicated_sessions": duplicated,
-            "out_dir": out_dir}
+
+class _FieldExport:
+    """Indicadores de campo acumulados participante a participante."""
+
+    def __init__(self, self_reports: Sequence[dict], out_dir: Path,
+                 fcfg: "fa.FieldConfig", planned_days: int = 15):
+        self.reports_by_code: Dict[str, List[dict]] = {}
+        for r in self_reports:
+            code = r.get("participant_code") or NO_CODE
+            self.reports_by_code.setdefault(code, []).append(r)
+        self.out_dir, self.fcfg, self.planned_days = out_dir, fcfg, planned_days
+        self.all_days, self.all_hourly, self.summaries = [], [], []
+        self.days_by_code, self.hourly_by_code = {}, {}
+
+    def add(self, sessions: Sequence[dict]) -> None:
+        data = fa.collect_field_data(sessions, self.reports_by_code, self.fcfg)
+        if not data:
+            return
+        detail_dir = self.out_dir / "detalle"
+        detail_dir.mkdir(exist_ok=True)
+        for code in sorted(data):
+            pd = data[code]
+            days = fa.daily_summary(pd, self.fcfg)
+            hourly = fa.hourly_profile(pd, self.fcfg)
+            summary = fa.participant_summary(pd, days, self.fcfg,
+                                             self.planned_days)
+            self.days_by_code[code] = days
+            self.hourly_by_code[code] = hourly
+            self.all_days.extend(days)
+            self.all_hourly.extend(hourly)
+            self.summaries.append(summary)
+            write_csv(detail_dir / f"metricas_{code}.csv", (
+                dict({"participante": code, "fase": r["_phase"],
+                      "hora": _iso(r["timestamp"]),
+                      "condicion": r.get("condition_label") or ""},
+                     **{c: r.get(c) for c in METRIC_COLUMNS})
+                for r in pd.rows),
+                ["participante", "fase", "hora", "condicion"] + METRIC_COLUMNS)
+
+    def finish(self, reports: bool = True) -> dict:
+        if not self.summaries:
+            return {"participants": [], "days": []}
+        out_dir, fcfg = self.out_dir, self.fcfg
+        write_csv(out_dir / "resumen_diario.csv",
+                  [fa.round_row(d) for d in self.all_days])
+        write_csv(out_dir / "resumen_participantes.csv",
+                  [fa.round_row(s) for s in self.summaries])
+        write_csv(out_dir / "perfil_horario.csv",
+                  [fa.round_row(h) for h in self.all_hourly])
+        tests = fa.group_tests(self.summaries)
+        write_csv(out_dir / "prueba_grupo.csv",
+                  [fa.round_row(t, 4) for t in tests])
+        if reports:
+            write_reports(out_dir / "reportes", self.summaries,
+                          self.days_by_code, self.hourly_by_code,
+                          fcfg.dev_threshold, fcfg.bands)
+        return {"participants": self.summaries, "days": self.all_days,
+                "tests": tests}
 
 
 def export_field(sessions: Sequence[dict], self_reports: Sequence[dict],
                  out_dir: Path, fcfg: "fa.FieldConfig",
                  planned_days: int = 15, reports: bool = True) -> dict:
     """Indicadores del estudio de campo (si hay sesiones de campo)."""
-    reports_by_code: Dict[str, List[dict]] = {}
-    for r in self_reports:
-        code = r.get("participant_code") or NO_CODE
-        reports_by_code.setdefault(code, []).append(r)
-
-    data = fa.collect_field_data(sessions, reports_by_code, fcfg)
-    if not data:
-        return {"participants": [], "days": []}
-
-    all_days, all_hourly, summaries = [], [], []
-    days_by_code, hourly_by_code = {}, {}
-    detail_dir = out_dir / "detalle"
-    detail_dir.mkdir(exist_ok=True)
-    for code in sorted(data):
-        pd = data[code]
-        days = fa.daily_summary(pd, fcfg)
-        hourly = fa.hourly_profile(pd, fcfg)
-        summary = fa.participant_summary(pd, days, fcfg, planned_days)
-        days_by_code[code], hourly_by_code[code] = days, hourly
-        all_days.extend(days)
-        all_hourly.extend(hourly)
-        summaries.append(summary)
-
-        write_csv(detail_dir / f"metricas_{code}.csv", [
-            dict({"participante": code, "fase": r["_phase"],
-                  "hora": _iso(r["timestamp"]),
-                  "condicion": r.get("condition_label") or ""},
-                 **{c: r.get(c) for c in METRIC_COLUMNS})
-            for r in pd.rows],
-            ["participante", "fase", "hora", "condicion"] + METRIC_COLUMNS)
-
-    write_csv(out_dir / "resumen_diario.csv",
-              [fa.round_row(d) for d in all_days])
-    write_csv(out_dir / "resumen_participantes.csv",
-              [fa.round_row(s) for s in summaries])
-    write_csv(out_dir / "perfil_horario.csv",
-              [fa.round_row(h) for h in all_hourly])
-    if reports:
-        write_reports(out_dir / "reportes", summaries, days_by_code,
-                      hourly_by_code, fcfg.dev_threshold, fcfg.bands)
-    return {"participants": summaries, "days": all_days}
+    fe = _FieldExport(self_reports, out_dir, fcfg, planned_days)
+    fe.add(sessions)
+    return fe.finish(reports)
 
 
 def print_summary(result: dict) -> None:
@@ -737,6 +826,20 @@ def print_summary(result: dict) -> None:
                   f"{p['dias_validos']:7d} {p['dias_validos_linea_base']:4d} "
                   f"{p['dias_validos_intervencion']:6d}  {cambio:>20s}  "
                   f"{nap_txt}")
+        main = next((t for t in field.get("tests", [])
+                     if t["indicador"] == "pct_desviado"), None)
+        if main and main["n_pares"]:
+            p_txt = "—" if main["p"] is None else f"{main['p']:.3f}"
+            r_txt = ("—" if main["r_biserial"] is None
+                     else f"{main['r_biserial']:+.2f}")
+            print(f"  Wilcoxon (% desviado, grupo de intervención): "
+                  f"n = {main['n_pares']}, p = {p_txt}, r = {r_txt}"
+                  + (f"  [{main['nota']}]" if main["nota"] else ""))
+        versions = {v for p in parts_f for v in p["versiones_app"].split(";")
+                    if v}
+        if len(versions) > 1:
+            print(f"[AVISO] Se usaron {len(versions)} versiones de la app "
+                  f"({', '.join(sorted(versions))}).")
         hashes = {h for p in parts_f for h in p["configuraciones"].split(";")
                   if h}
         if len(hashes) > 1:

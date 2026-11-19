@@ -20,7 +20,7 @@ Línea base múltiple con control (diseño elegido, 2026-11-12)
 -----------------------------------------------------------
 Los participantes del grupo de intervención no empiezan a recibir avisos el
 mismo día: cada uno tiene su propia duración de línea base
-(`dias_linea_base` del perfil, p. ej. 5, 7 o 9 días, sorteados). Si cada uno
+(`dias_linea_base` del perfil: 3, 5 o 7 días, sorteados). Si cada uno
 mejora justo cuando empiezan SUS avisos, y no antes, la mejora se atribuye al
 sistema y no a una causa común (la semana, la novedad, saberse observado).
 El grupo de control usa la app todo el estudio sin recibir nunca avisos (fase

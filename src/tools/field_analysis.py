@@ -444,16 +444,15 @@ def collect_field_data(sessions: Sequence[dict],
                 if r.get("fps") is None or r["fps"] == 0
                 or r["fps"] >= MIN_VALID_FPS]
         durs = row_durations(rows, cfg.max_gap_sec)
+        # Se anotan en la propia fila, sin copiarla: con cientos de miles de
+        # filas por participante, la copia duplicaba la memoria.
         for r, d in zip(rows, durs):
-            r = dict(r)
             r["_phase"], r["_dur"] = phase, d
             pd.rows.append(r)
         for e in ses["events"]:
-            e = dict(e)
             e["_phase"] = phase
             pd.events.append(e)
         for e in ses.get("suppressed", []):
-            e = dict(e)
             e["_phase"] = phase
             pd.suppressed.append(e)
         if ses.get("version"):
@@ -692,6 +691,62 @@ def participant_summary(pd: ParticipantData, days: Sequence[dict],
         b = [d[key] for d in base if isinstance(d.get(key), (int, float))]
         i = [d[key] for d in interv if isinstance(d.get(key), (int, float))]
         out[f"nap_{key}"] = nap(b, i, lower)
+    return out
+
+
+def group_tests(summaries: Sequence[dict]) -> List[dict]:
+    """
+    Prueba de grupo, línea base frente a intervención, con los participantes
+    del grupo de intervención válidos para el análisis.
+
+    Wilcoxon de rangos con signo (exacto con muestras pequeñas) y tamaño del
+    efecto r de rangos biserial = (W+ - W-) / (W+ + W-) sobre las diferencias
+    no nulas: -1 = todos bajan, +1 = todos suben. Con menos de 6 pares la
+    prueba exacta no puede dar p < 0.05 y se indica.
+    """
+    try:
+        from scipy.stats import wilcoxon
+    except ImportError:            # pragma: no cover - scipy viene con la app
+        wilcoxon = None
+    pool = [s for s in summaries if s.get("grupo") != "control"
+            and s.get("valido_para_analisis") == "si"]
+    out = []
+    for key, label in COMPARED:
+        pairs = [(s[f"{key}_base"], s[f"{key}_interv"]) for s in pool
+                 if isinstance(s.get(f"{key}_base"), (int, float))
+                 and isinstance(s.get(f"{key}_interv"), (int, float))]
+        diffs = [i - b for b, i in pairs]
+        nz = [d for d in diffs if abs(d) > 1e-12]
+        row = {"indicador": key, "descripcion": label, "n_pares": len(pairs),
+               "mediana_base": median([b for b, _ in pairs]) if pairs else None,
+               "mediana_interv": median([i for _, i in pairs]) if pairs else None,
+               "mediana_cambio": median(diffs) if diffs else None,
+               "W": None, "p": None, "r_biserial": None,
+               "nota": ""}
+        if nz:
+            ranked = sorted(nz, key=abs)
+            ranks, k = {}, 0
+            while k < len(ranked):          # rangos medios en empates
+                j = k
+                while j + 1 < len(ranked) and abs(ranked[j + 1]) == abs(ranked[k]):
+                    j += 1
+                for m in range(k, j + 1):
+                    ranks.setdefault(abs(ranked[m]), (k + j + 2) / 2)
+                k = j + 1
+            wp = sum(ranks[abs(d)] for d in nz if d > 0)
+            wn = sum(ranks[abs(d)] for d in nz if d < 0)
+            row["r_biserial"] = (wp - wn) / (wp + wn)
+        if wilcoxon is not None and len(nz) >= 1:
+            try:
+                res = wilcoxon([b for b, _ in pairs], [i for _, i in pairs],
+                               zero_method="wilcox", method="auto")
+                row["W"], row["p"] = float(res.statistic), float(res.pvalue)
+            except ValueError as exc:
+                row["nota"] = str(exc)
+        if len(pairs) < 6:
+            row["nota"] = (row["nota"] + " " if row["nota"] else "") + (
+                "menos de 6 pares: la prueba exacta no puede dar p < 0.05")
+        out.append(row)
     return out
 
 

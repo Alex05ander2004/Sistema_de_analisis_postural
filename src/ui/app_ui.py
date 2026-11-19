@@ -715,7 +715,7 @@ class InferenceThread(threading.Thread):
                 default_baseline_days=int(self._field_cfg.get(
                     "baseline_days", 5)),
                 min_minutes=float(self._field_cfg.get(
-                    "baseline_min_minutes", 60)))
+                    "baseline_min_minutes", 120)))
             # Línea base y control: se mide y se registra, pero no se avisa.
             self._alerts_muted = self._phase in (PHASE_BASELINE,
                                                  PHASE_CONTROL)
@@ -1615,7 +1615,7 @@ def main(page: ft.Page):
             cfg_code, cfg_mode, cfg_group, cfg_days,
             ft.Text("Grupo y días de línea base solo cuentan en modo campo. "
                     "Sortea los días de línea base entre los participantes "
-                    "de intervención (p. ej. 5, 7 y 9).",
+                    "de intervención: 3, 5 o 7.",
                     size=11, color=ft.colors.WHITE54),
             ft.Divider(),
             ft.Text("Cámara de este equipo (FOV)", weight=ft.FontWeight.W_600),
@@ -1708,7 +1708,7 @@ def main(page: ft.Page):
             phase, _, done = field_phase(
                 profile, minutes, today_iso(),
                 default_baseline_days=default_days,
-                min_minutes=float(field_cfg.get("baseline_min_minutes", 60)))
+                min_minutes=float(field_cfg.get("baseline_min_minutes", 120)))
         except Exception:
             logger.exception("No se pudo decidir la fase para el historial.")
             return ""

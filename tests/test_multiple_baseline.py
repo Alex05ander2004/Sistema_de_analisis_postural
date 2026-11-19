@@ -205,3 +205,37 @@ class TestStopSession:
                            ).fetchall()
         con.close()
         assert len(rows) == 2 and rows[0][0] is not None
+
+
+# ------------------------------------------------- prueba de grupo
+
+def _summary(code, base, interv, grupo="intervencion", ok="si"):
+    return {"participante": code, "grupo": grupo, "valido_para_analisis": ok,
+            "pct_desviado_base": base, "pct_desviado_interv": interv}
+
+
+class TestGroupTests:
+
+    def _main(self, summaries):
+        return next(t for t in fa.group_tests(summaries)
+                    if t["indicador"] == "pct_desviado")
+
+    def test_all_improve(self):
+        rows = [_summary(f"P{i}", 30 + i, 20 + i * 0.5) for i in range(6)]
+        t = self._main(rows)
+        assert t["n_pares"] == 6
+        assert t["r_biserial"] == -1.0
+        assert t["p"] == pytest.approx(0.03125)
+        assert t["nota"] == ""
+
+    def test_control_and_invalid_are_excluded(self):
+        rows = [_summary("P1", 30, 20), _summary("P2", 30, 25),
+                _summary("C1", 30, 10, grupo="control"),
+                _summary("P3", 30, 10, ok="no")]
+        t = self._main(rows)
+        assert t["n_pares"] == 2
+        assert "menos de 6 pares" in t["nota"]
+
+    def test_no_data(self):
+        t = self._main([])
+        assert t["n_pares"] == 0 and t["p"] is None

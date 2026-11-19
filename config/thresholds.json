@@ -156,8 +156,8 @@
     "_modes_comment": "El MODO (laboratorio / campo), el código del participante y el FOV de su cámara NO van aquí: se guardan en data/estudio_local.json desde el botón 'Estudio' de la app, para que este archivo sea idéntico en todos los equipos (su huella se guarda en cada sesión como config_hash). Laboratorio = protocolo guiado con selector de condición (sesiones 'validacion'). Campo = uso diario en casa, sin selector, con línea base e intervención.",
     "field": {
       "baseline_days": 5,
-      "baseline_min_minutes": 60,
-      "_baseline_comment": "Línea base del estudio de campo: la app mide y REGISTRA las alertas (events.notified=0) pero no las muestra, hasta completar baseline_days días con al menos baseline_min_minutes de seguimiento real. La fase se decide al iniciar cada sesión con los días anteriores a hoy (todo un día queda en la misma fase). Después, intervención con avisos. Poner baseline_days=0 para desactivar la línea base.",
+      "baseline_min_minutes": 120,
+      "_baseline_comment": "baseline_min_minutes = 120 (2026-11-19, antes 60): igual que valid_day_min_minutes, para que cada día que cuenta para la línea base sea también un día VÁLIDO para el análisis. Con 60, un día de 60-119 min adelantaba los avisos sin aportar un dato válido, y con líneas base cortas (3 días) el participante quedaba fuera del análisis. Línea base del estudio de campo: la app mide y REGISTRA las alertas (events.notified=0) pero no las muestra, hasta completar baseline_days días con al menos baseline_min_minutes de seguimiento real. La fase se decide al iniciar cada sesión con los días anteriores a hoy (todo un día queda en la misma fase). Después, intervención con avisos. Poner baseline_days=0 para desactivar la línea base.",
       "planned_days": 15,
       "valid_day_min_minutes": 120,
       "valid_day_min_block_minutes": 60,
