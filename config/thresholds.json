@@ -145,6 +145,8 @@
     "conditions": [
       {"id": "correcta", "label": "Postura correcta", "expected_alert": null},
       {"id": "cabeza_adelantada", "label": "Cabeza adelantada", "expected_alert": "cervical_angle"},
+      {"id": "adelantada_leve", "label": "Medición umbral: adelantada ~5 cm", "expected_alert": null, "scored": false},
+      {"id": "adelantada_marcada", "label": "Medición umbral: adelantada 10-12 cm", "expected_alert": null, "scored": false},
       {"id": "hombros_desnivelados", "label": "Hombros desnivelados", "expected_alert": "shoulder_asymmetry"},
       {"id": "ojos_cerrados", "label": "Ojos cerrados (4 s o más)", "expected_alert": ["eye_fatigue", "drowsiness"]},
       {"id": "bostezo", "label": "Bostezo simulado", "expected_alert": "yawn"},
