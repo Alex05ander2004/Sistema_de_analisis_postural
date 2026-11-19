@@ -30,7 +30,7 @@ from src.tools import export_study as ex
 from src.tools import field_analysis as fa
 from src.tools.field_report import multiple_baseline_html
 
-from tests.test_field_study import (FIELD_CONFIG, _days, _field_thread,
+from tests.test_field_study import (FIELD_CONFIG, _days, _field_thread, _wait,
                                     _run_session, make_field_db)
 
 
@@ -182,3 +182,26 @@ class TestMultipleBaselineExport:
     def test_figure_without_data_does_not_crash(self):
         html = multiple_baseline_html([{"participante": "P01"}], {})
         assert "P01" in html
+
+
+class TestStopSession:
+
+    def test_stop_closes_session_and_keeps_calibration(self, tmp_path):
+        prof = fs.LocalProfile(participante="U01", modo=fs.MODE_LAB)
+        t, restore, db_path, _ = _field_thread(tmp_path, prof)
+        try:
+            _run_session(t)
+            t.set_paused(True)
+            t.request_stop()
+            assert _wait(lambda: t.mode == "ready")
+            assert not t.is_paused, "al terminar se vuelve a encender la cámara"
+            assert t.can_start, "la calibración se conserva"
+            t.request_start()
+            assert _wait(lambda: t.mode == "monitoring")
+        finally:
+            t.stop(); t.join(timeout=5.0); restore()
+        con = sqlite3.connect(db_path)
+        rows = con.execute("SELECT ended_at FROM sessions ORDER BY started_at"
+                           ).fetchall()
+        con.close()
+        assert len(rows) == 2 and rows[0][0] is not None

@@ -596,6 +596,11 @@ class InferenceThread(threading.Thread):
     def cancel_calibration(self) -> None:
         self._commands.put("cancel")
 
+    def request_stop(self) -> None:
+        """Pide terminar el seguimiento: cierra la sesión y vuelve a
+        «listo», conservando la calibración."""
+        self._commands.put("stop")
+
     def _process_commands(self) -> None:
         """Aplica las órdenes de la interfaz, en este hilo."""
         while True:
@@ -621,6 +626,16 @@ class InferenceThread(threading.Thread):
                 self._calibration.cancel()
                 self._mode = "preview"
                 logger.info("Calibración cancelada; modo: vista previa.")
+
+            elif cmd == "stop" and self._mode == "monitoring":
+                self._db.end_session()
+                self._condition = ""
+                self.cancel_yield()
+                if self._paused.is_set():
+                    self.set_paused(False)       # vuelve a encender la cámara
+                self._fsm.reset_timers()
+                self._mode = "ready"
+                logger.info("Seguimiento terminado; modo: listo.")
 
             elif cmd == "start":
                 if not self.can_start:
@@ -1285,6 +1300,11 @@ def main(page: ft.Page):
         inference_thread.yield_camera(yield_seconds)
         _refresh_controls(force=True)
 
+    def _on_stop_click(_):
+        inference_thread.request_stop()
+        _yield["auto"] = False
+        _refresh_controls(force=True)
+
     def _on_pause_click(_):
         paused = not inference_thread.is_paused
         inference_thread.cancel_yield()
@@ -1309,6 +1329,11 @@ def main(page: ft.Page):
         visible=False,
         tooltip="Detiene la cámara (el piloto se apaga) sin perder la calibración",
     )
+    btn_stop = ft.OutlinedButton(
+        "Terminar sesión", icon=ft.icons.STOP, on_click=_on_stop_click,
+        visible=False,
+        tooltip="Termina y guarda la sesión; luego puedes cambiar la "
+                "configuración, recalibrar o iniciar otra")
     yield_seconds = float(cam_cfg.get("yield_seconds", 20))
     btn_yield = ft.OutlinedButton(
         "Ceder cámara", icon=ft.icons.VIDEO_CALL, on_click=_on_yield_click,
@@ -1318,7 +1343,7 @@ def main(page: ft.Page):
     control_bar = ft.Container(
         content=ft.Row([
             status_dot, status_text, ft.Container(expand=True),
-            btn_calibrate, btn_start, btn_yield, btn_pause,
+            btn_calibrate, btn_start, btn_yield, btn_pause, btn_stop,
         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor="#16162A",
         border=ft.border.all(1, "#2A2A4A"),
@@ -1469,6 +1494,7 @@ def main(page: ft.Page):
             video_feed.show_paused()
 
         btn_pause.visible = mode == "monitoring"
+        btn_stop.visible = mode == "monitoring"
         btn_yield.visible = mode == "monitoring" and not paused
         btn_pause.text = "Reanudar" if paused else "Pausar"
         btn_pause.icon = ft.icons.PLAY_ARROW if paused else ft.icons.PAUSE
