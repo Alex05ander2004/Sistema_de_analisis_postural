@@ -22,10 +22,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from src.tools.field_analysis import COMPARED, band_labels
+from src.tools.field_analysis import (COMPARED, LOWER_IS_BETTER,
+                                     TEST_BETWEEN, TEST_WITHIN_CONTROL,
+                                     TEST_WITHIN_INTERV, band_labels)
 
 BASE_COLOR = "#7A8BA6"
 INTERV_COLOR = "#0E8F8A"
+CONTROL_COLOR = "#C27C0E"      # control, periodo «después» (sin avisos)
 PHASE_NAME = {"linea_base": "Línea base", "intervencion": "Intervención",
               "control": "Control"}
 
@@ -163,22 +166,20 @@ svg .tick { fill: var(--muted); font-size: 11px; }
                figure, table { break-inside: avoid; } }
 """
 
-# Para estos indicadores, BAJAR es mejorar.
-_LOWER_IS_BETTER = {
-    "pct_desviado", "delta_theta_media", "episodio_max_s",
-    "episodios_sostenidos_por_hora", "alertas_detectadas_por_hora",
-    "pct_hombros_asimetricos", "pct_demasiado_cerca", "perclos_medio",
-    "correccion_mediana_s", "tramo_max_sin_pausa_min", "dolor_cuello",
-    "cansancio_visual", "somnolencia",
-}
+_LOWER_IS_BETTER = LOWER_IS_BETTER
 
 
 def build_report(summary: dict, days: Sequence[dict], hourly: Sequence[dict],
                  dev_threshold: float, bands: Sequence[float]) -> str:
     code = html.escape(summary["participante"])
     labels = [d["fecha"][5:] for d in days]
-    colors = [BASE_COLOR if d["fase"] == "linea_base" else INTERV_COLOR
-              for d in days]
+    cut = summary.get("dia_inicio_despues")
+    if summary.get("grupo") == "control":
+        colors = [CONTROL_COLOR if cut and d["dia_uso"] >= cut else BASE_COLOR
+                  for d in days]
+    else:
+        colors = [BASE_COLOR if d["fase"] == "linea_base" else INTERV_COLOR
+                  for d in days]
     faded = [d["dia_valido"] != "si" for d in days]
 
     # --- Comparación ----------------------------------------------------
@@ -263,8 +264,11 @@ def build_report(summary: dict, days: Sequence[dict], hourly: Sequence[dict],
     control_note = (
         "<p><b>Grupo de control:</b> esta persona usó la app sin recibir "
         "nunca avisos. En la comparación, «línea base» e «intervención» son "
-        "los días antes y después de un corte de referencia, para ver si "
-        "cambió solo con el paso del tiempo.</p>"
+        "los días antes y después del corte"
+        + (f" (día de uso {cut})" if cut else "") +
+        ": el día en que habrían empezado los avisos con la misma regla que "
+        "el otro grupo (5 días de al menos 2 h). En las gráficas, ocre = "
+        "después del corte, todavía sin avisos.</p>"
         if summary.get("grupo") == "control" else "")
     kpi_html = "".join(f'<div class="kpi"><b>{html.escape(str(v))}</b>'
                        f'<span>{html.escape(t)}</span></div>' for v, t in kpis)
@@ -359,20 +363,39 @@ no válidos se muestran atenuados y no entran en la comparación.</li>
 </main></body></html>"""
 
 
-def multiple_baseline_html(summaries: Sequence[dict],
-                           days_by_code: Dict[str, List[dict]],
-                           key: str = "pct_desviado",
-                           label: str = "% del tiempo con desviación cervical "
-                                        "sobre el umbral") -> str:
+_PAGE_CSS = (
+    "html{background:#fff;color-scheme:light}"
+    "body{font-family:Segoe UI,Arial,sans-serif;max-width:960px;"
+    "margin:24px auto;padding:0 16px;color:#222;background:#fff}"
+    "h1{font-size:22px}h2{font-size:17px;margin:28px 0 6px}"
+    "h3{font-size:15px;margin:14px 0 2px}small{color:#666;font-weight:400}"
+    ".panel{border-bottom:1px solid #eee}p,li{color:#444;font-size:13px}"
+    "table{border-collapse:collapse;font-size:13px;margin:8px 0}"
+    "th,td{border-bottom:1px solid #e3e3e3;padding:5px 9px;text-align:right}"
+    "th:first-child,td:first-child{text-align:left}th{background:#f4f6f9}"
+    ".legend{display:flex;gap:16px;font-size:12px;color:#555}"
+    ".legend i{display:inline-block;width:10px;height:10px;border-radius:2px;"
+    "margin-right:5px}")
+
+
+def _after_start(s: dict) -> Optional[int]:
+    """Día de uso en que empieza el «después» (avisos o corte del control)."""
+    return s.get("dia_inicio_despues") or s.get("dia_inicio_avisos")
+
+
+def evolution_html(summaries: Sequence[dict],
+                   days_by_code: Dict[str, List[dict]],
+                   key: str = "pct_desviado",
+                   label: str = "% del tiempo con desviación cervical "
+                                "sobre el umbral") -> str:
     """
-    Gráfico de línea base múltiple: un panel por participante, día de uso en
-    el eje x, el indicador en el eje y y una línea discontinua donde empiezan
-    SUS avisos. Los de intervención van ordenados por día de inicio y el
-    control al final. Es la figura central de un diseño de caso único.
+    Evolución por participante: un panel por persona, día de uso en el eje x,
+    el indicador en el eje y y una línea discontinua donde empieza SU periodo
+    «después» (los avisos, o el corte equivalente en el control). Primero el
+    grupo con avisos y luego el control.
     """
     order = sorted(summaries, key=lambda s: (
-        s.get("grupo") == "control", s.get("dia_inicio_avisos") or 99,
-        s["participante"]))
+        s.get("grupo") == "control", s["participante"]))
     max_day = max([d["dia_uso"] for s in order
                    for d in days_by_code.get(s["participante"], [])] or [1])
     vals = [d[key] for s in order
@@ -385,8 +408,19 @@ def multiple_baseline_html(summaries: Sequence[dict],
     panels = []
     for s in order:
         code = s["participante"]
+        control = s.get("grupo") == "control"
+        start = _after_start(s)
         days = days_by_code.get(code, [])
-        pts = [(d["dia_uso"], d[key], d["dia_valido"] == "si", d["fase"])
+
+        def period(d):
+            if control:
+                return ("despues_control" if start and d["dia_uso"] >= start
+                        else "antes")
+            return "despues" if d["fase"] == "intervencion" else "antes"
+
+        color_of = {"antes": BASE_COLOR, "despues": INTERV_COLOR,
+                    "despues_control": CONTROL_COLOR}
+        pts = [(d["dia_uso"], d[key], d["dia_valido"] == "si", period(d))
                for d in days if isinstance(d.get(key), (int, float))]
         parts = [f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" '
                  f'aria-label="{html.escape(code)}">']
@@ -402,56 +436,297 @@ def multiple_baseline_html(summaries: Sequence[dict],
             parts.append(f'<text x="{X(day):.0f}" y="{H - 12}" '
                          f'text-anchor="middle" font-size="10" fill="#777">'
                          f'{day}</text>')
-        start = s.get("dia_inicio_avisos")
         if start:
             xs = X(start - 0.5)
             parts.append(f'<line x1="{xs:.0f}" y1="{T}" x2="{xs:.0f}" '
                          f'y2="{H - B}" stroke="#333" stroke-dasharray="5 4"/>')
-        for seg in ("linea_base", "intervencion", "control"):
+        for seg, color in color_of.items():
             seg_pts = [(x, v) for x, v, _, f in pts if f == seg]
             if len(seg_pts) > 1:
-                color = INTERV_COLOR if seg == "intervencion" else BASE_COLOR
                 path = " ".join(f"{X(x):.1f},{Y(v):.1f}" for x, v in seg_pts)
                 parts.append(f'<polyline points="{path}" fill="none" '
                              f'stroke="{color}" stroke-width="2"/>')
         for x, v, ok, f in pts:
-            color = INTERV_COLOR if f == "intervencion" else BASE_COLOR
+            color = color_of[f]
             fill = color if ok else "white"
             parts.append(f'<circle cx="{X(x):.1f}" cy="{Y(v):.1f}" r="4" '
                          f'fill="{fill}" stroke="{color}" stroke-width="1.5">'
                          f'<title>Día {x}: {v:.1f}</title></circle>')
         parts.append("</svg>")
         napv = s.get(f"nap_{key}")
-        tag = ("control (sin avisos)" if s.get("grupo") == "control"
-               else f"avisos desde el día {start}" if start else "sin avisos aún")
+        if control:
+            tag = ("control (sin avisos)"
+                   + (f" · corte el día {start}" if start else ""))
+        else:
+            tag = (f"avisos desde el día {start}" if start
+                   else "sin avisos aún")
         nap_txt = "" if napv is None else f" · NAP {napv:.2f}"
+        ok_txt = ("" if s.get("valido_para_analisis") == "si"
+                  else " · no entra en el análisis (pocos días válidos)")
         panels.append(f'<div class="panel"><h3>{html.escape(code)} '
-                      f'<small>{tag}{nap_txt}</small></h3>{"".join(parts)}</div>')
+                      f'<small>{tag}{nap_txt}{ok_txt}</small></h3>'
+                      f'{"".join(parts)}</div>')
     return f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
-<title>Línea base múltiple</title>
-<style>html{{background:#fff;color-scheme:light}}body{{font-family:Segoe UI,Arial,sans-serif;max-width:960px;margin:24px auto;color:#222;background:#fff}}
-h1{{font-size:22px}}h3{{font-size:15px;margin:14px 0 2px}}small{{color:#666;font-weight:400}}
-.panel{{border-bottom:1px solid #eee}}p{{color:#444;font-size:13px}}</style></head><body>
-<h1>Línea base múltiple: {html.escape(label)}</h1>
-<p>Un panel por participante. Gris: días sin avisos (línea base o control); verde: días con avisos.
-La línea discontinua marca el día en que empezaron los avisos de ese participante. Punto relleno = día
-válido; hueco = día con poco uso (no entra en el análisis). NAP: proporción de pares de días en que la
-fase con avisos es mejor que la línea base (0.5 = sin efecto, 1 = mejora total). En el control, el NAP
-usa un corte de referencia y muestra el cambio sin avisos.</p>
+<title>Evolución por participante</title>
+<style>{_PAGE_CSS}</style></head><body>
+<h1>Evolución por participante: {html.escape(label)}</h1>
+<p>Un panel por participante, primero el grupo con avisos y después el
+control. Gris: línea base (sin avisos). Verde: con avisos. Ocre: control
+después del corte (sigue sin avisos). La línea discontinua marca dónde empieza
+el periodo «después»: en el control es el día en que habrían empezado los
+avisos con la misma regla (5 días de al menos 2 h). Punto relleno = día
+válido; hueco = día con poco uso (no entra en el análisis). NAP: proporción de
+pares de días en que el «después» es mejor que el «antes» (0.5 = sin cambio,
+1 = mejora total).</p>
+<div class="legend"><span><i style="background:{BASE_COLOR}"></i>Antes (línea base)</span>
+<span><i style="background:{INTERV_COLOR}"></i>Después, con avisos</span>
+<span><i style="background:{CONTROL_COLOR}"></i>Después, control sin avisos</span></div>
 {''.join(panels)}
+</body></html>"""
+
+
+def _fmt_p(p) -> str:
+    if not isinstance(p, (int, float)):
+        return "—"
+    return "< 0.001" if p < 0.001 else f"{p:.3f}"
+
+
+def group_comparison_html(summaries: Sequence[dict],
+                          days_by_code: Dict[str, List[dict]],
+                          tests: Sequence[dict],
+                          key: str = "pct_desviado",
+                          label: str = "% del tiempo con desviación cervical "
+                                       "sobre el umbral") -> str:
+    """
+    Figura del diseño con preprueba, posprueba y grupo de control:
+      1. antes y después de cada persona, por grupo, con la mediana;
+      2. el cambio de cada persona por grupo (lo que compara Mann-Whitney);
+      3. la media diaria de cada grupo por día de uso;
+    y la tabla de las tres pruebas del indicador.
+    """
+    valid = [s for s in summaries if s.get("valido_para_analisis") == "si"]
+    groups = (("intervencion", "Con avisos", INTERV_COLOR),
+              ("control", "Control (sin avisos)", CONTROL_COLOR))
+    members = {g: [s for s in valid
+                   if (s.get("grupo") == "control") == (g == "control")
+                   and isinstance(s.get(f"{key}_base"), (int, float))
+                   and isinstance(s.get(f"{key}_interv"), (int, float))]
+               for g, _, _ in groups}
+
+    def _median(xs):
+        xs = sorted(xs)
+        n = len(xs)
+        return None if not n else (xs[n // 2] if n % 2
+                                   else (xs[n // 2 - 1] + xs[n // 2]) / 2)
+
+    # 1. Antes y después
+    allv = [s[f"{key}_{p}"] for g in members for s in members[g]
+            for p in ("base", "interv")]
+    vmax = max(allv + [10.0]) * 1.12
+    W, H, T, B = 440, 300, 20, 40
+    Y = lambda v: T + (1 - v / vmax) * (H - T - B)
+    prepost = []
+    for g, name, color in groups:
+        x0, x1 = 100, 280
+        p = [f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" '
+             f'aria-label="{html.escape(name)}">']
+        for v in (0, vmax / 2, vmax / 1.12):
+            p.append(f'<line x1="60" x2="{W - 20}" y1="{Y(v):.1f}" '
+                     f'y2="{Y(v):.1f}" stroke="#eee"/>')
+            p.append(f'<text x="54" y="{Y(v) + 4:.1f}" text-anchor="end" '
+                     f'font-size="11" fill="#555">{v:.0f}</text>')
+        for x, t in ((x0, "Antes"), (x1, "Después")):
+            p.append(f'<text x="{x}" y="{H - 14}" text-anchor="middle" '
+                     f'font-size="12" fill="#333">{t}</text>')
+        for s in members[g]:
+            b, i = s[f"{key}_base"], s[f"{key}_interv"]
+            p.append(f'<line x1="{x0}" y1="{Y(b):.1f}" x2="{x1}" '
+                     f'y2="{Y(i):.1f}" stroke="{color}" stroke-opacity="0.45" '
+                     f'stroke-width="1.5"><title>{html.escape(s["participante"])}'
+                     f': {b:.1f} → {i:.1f}</title></line>')
+            for x, v in ((x0, b), (x1, i)):
+                p.append(f'<circle cx="{x}" cy="{Y(v):.1f}" r="3.5" '
+                         f'fill="{color}" fill-opacity="0.6"/>')
+        mb = _median([s[f"{key}_base"] for s in members[g]])
+        mi = _median([s[f"{key}_interv"] for s in members[g]])
+        if mb is not None:
+            p.append(f'<line x1="{x0}" y1="{Y(mb):.1f}" x2="{x1}" '
+                     f'y2="{Y(mi):.1f}" stroke="#222" stroke-width="3.5"/>')
+            p.append(f'<text x="{x1 + 10}" y="{Y(mi) + 4:.1f}" font-size="12" '
+                     f'fill="#222">mediana {mb:.1f} → {mi:.1f}</text>')
+        p.append("</svg>")
+        prepost.append(f'<div style="flex:1;min-width:280px"><h3>{name} '
+                       f'<small>n = {len(members[g])}</small></h3>'
+                       f'{"".join(p)}</div>')
+
+    # 2. Cambio por persona
+    ch = {g: [(s["participante"], s[f"{key}_interv"] - s[f"{key}_base"])
+              for s in members[g]] for g, _, _ in groups}
+    allc = [c for g in ch for _, c in ch[g]] + [0.0]
+    lo, hi = min(allc), max(allc)
+    span = max(hi - lo, 1.0)
+    lo, hi = lo - 0.1 * span, hi + 0.1 * span
+    W2, H2, L2, R2 = 900, 190, 170, 30
+    X2 = lambda v: L2 + (v - lo) / (hi - lo) * (W2 - L2 - R2)
+    c = [f'<svg viewBox="0 0 {W2} {H2}" width="100%" role="img" '
+         f'aria-label="Cambio por persona">']
+    c.append(f'<line x1="{X2(0):.1f}" x2="{X2(0):.1f}" y1="10" y2="{H2 - 44}" '
+             f'stroke="#999" stroke-dasharray="4 3"/>')
+    for k in range(5):
+        v = lo + k * (hi - lo) / 4
+        c.append(f'<text x="{X2(v):.1f}" y="{H2 - 26}" text-anchor="middle" '
+                 f'font-size="11" fill="#555">{v:+.0f}</text>')
+    c.append(f'<text x="{(L2 + W2 - R2) / 2:.0f}" y="{H2 - 6}" '
+             f'text-anchor="middle" font-size="11" fill="#555">cambio '
+             f'(después − antes, en las unidades del indicador)</text>')
+    for row, (g, name, color) in enumerate(groups):
+        y = 45 + row * 60
+        c.append(f'<text x="{L2 - 12}" y="{y + 4}" text-anchor="end" '
+                 f'font-size="12" fill="#333">{name}</text>')
+        for n, (code, v) in enumerate(ch[g]):
+            jitter = ((n % 5) - 2) * 4
+            c.append(f'<circle cx="{X2(v):.1f}" cy="{y + jitter}" r="5" '
+                     f'fill="{color}" fill-opacity="0.75"><title>'
+                     f'{html.escape(code)}: {v:+.1f}</title></circle>')
+        m = _median([v for _, v in ch[g]])
+        if m is not None:
+            c.append(f'<line x1="{X2(m):.1f}" x2="{X2(m):.1f}" y1="{y - 16}" '
+                     f'y2="{y + 16}" stroke="#222" stroke-width="3"/>')
+    c.append("</svg>")
+
+    # 3. Media diaria por grupo
+    max_day = max([d["dia_uso"] for s in valid
+                   for d in days_by_code.get(s["participante"], [])] or [1])
+    series = {}
+    for g, name, color in groups:
+        vals = []
+        for day in range(1, max_day + 1):
+            xs = [d[key] for s in members[g]
+                  for d in days_by_code.get(s["participante"], [])
+                  if d["dia_uso"] == day and d["dia_valido"] == "si"
+                  and isinstance(d.get(key), (int, float))]
+            vals.append(sum(xs) / len(xs) if len(xs) >= 2 else None)
+        series[name] = vals
+    starts = [_after_start(s) for g in members for s in members[g]
+              if _after_start(s)]
+    W3, H3, L3, R3, T3, B3 = 900, 240, 60, 20, 16, 34
+    dvals = [v for vs in series.values() for v in vs if v is not None]
+    dmax = max(dvals + [10.0]) * 1.12
+    X3 = lambda day: L3 + (day - 0.5) / max_day * (W3 - L3 - R3)
+    Y3 = lambda v: T3 + (1 - v / dmax) * (H3 - T3 - B3)
+    e = [f'<svg viewBox="0 0 {W3} {H3}" width="100%" role="img" '
+         f'aria-label="Media diaria por grupo">']
+    for v in (0, dmax / 2, dmax / 1.12):
+        e.append(f'<line x1="{L3}" x2="{W3 - R3}" y1="{Y3(v):.1f}" '
+                 f'y2="{Y3(v):.1f}" stroke="#eee"/>')
+        e.append(f'<text x="{L3 - 6}" y="{Y3(v) + 4:.1f}" text-anchor="end" '
+                 f'font-size="11" fill="#555">{v:.0f}</text>')
+    for day in range(1, max_day + 1):
+        e.append(f'<text x="{X3(day):.1f}" y="{H3 - 12}" text-anchor="middle" '
+                 f'font-size="10" fill="#777">{day}</text>')
+    if starts:
+        ms = _median(starts)
+        e.append(f'<line x1="{X3(ms - 0.5):.1f}" x2="{X3(ms - 0.5):.1f}" '
+                 f'y1="{T3}" y2="{H3 - B3}" stroke="#333" '
+                 f'stroke-dasharray="5 4"/>')
+        e.append(f'<text x="{X3(ms - 0.5) + 6:.1f}" y="{T3 + 10}" '
+                 f'font-size="11" fill="#333">empiezan los avisos '
+                 f'(mediana: día {ms:g})</text>')
+    for (g, name, color) in groups:
+        pts = [(X3(k + 1), Y3(v)) for k, v in enumerate(series[name])
+               if v is not None]
+        if len(pts) > 1:
+            e.append(f'<polyline points="'
+                     f'{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}" '
+                     f'fill="none" stroke="{color}" stroke-width="2.5"/>')
+        for x, y in pts:
+            e.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" '
+                     f'fill="{color}"/>')
+    e.append("</svg>")
+
+    # Tabla de pruebas
+    rows = [t for t in tests if t.get("indicador") == key]
+    trs = []
+    for t in rows:
+        n = (f'{t["n_intervencion"]} + {t["n_control"]}'
+             if t["prueba"] == TEST_BETWEEN else
+             t["n_intervencion"] if t["prueba"] == TEST_WITHIN_INTERV
+             else t["n_control"])
+        med = (t["mediana_cambio_intervencion"]
+               if t["prueba"] != TEST_WITHIN_CONTROL
+               else t["mediana_cambio_control"])
+        med_txt = "—" if not isinstance(med, (int, float)) else f"{med:+.1f}"
+        if t["prueba"] == TEST_BETWEEN and isinstance(
+                t["mediana_cambio_control"], (int, float)):
+            med_txt += f' vs {t["mediana_cambio_control"]:+.1f}'
+        r_txt = ("—" if not isinstance(t["r_biserial"], (int, float))
+                 else f'{t["r_biserial"]:+.2f}')
+        trs.append(f'<tr><td>{html.escape(t["nombre_prueba"])}</td>'
+                   f'<td>{n if n is not None else "—"}</td><td>{med_txt}</td>'
+                   f'<td>{_fmt_p(t["p_una_cola"])}</td>'
+                   f'<td>{_fmt_p(t["p_dos_colas"])}</td><td>{r_txt}</td>'
+                   f'<td style="text-align:left">{html.escape(t["nota"])}'
+                   f'</td></tr>')
+    excluded = [s["participante"] for s in summaries
+                if s.get("valido_para_analisis") != "si"]
+    excl_txt = (f" No entran en el análisis por tener pocos días válidos: "
+                f"{', '.join(excluded)}." if excluded else "")
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Comparación entre grupos</title>
+<style>{_PAGE_CSS}</style></head><body>
+<h1>Comparación entre grupos: {html.escape(label)}</h1>
+<p>Diseño con preprueba, posprueba y grupo de control.
+«Antes» = media de los días válidos de la línea base (todos sin avisos);
+«después» = media de los días válidos siguientes (con avisos en un grupo, sin
+avisos en el control). Solo participantes válidos para el análisis.{excl_txt}</p>
+<div class="legend"><span><i style="background:{INTERV_COLOR}"></i>Con avisos</span>
+<span><i style="background:{CONTROL_COLOR}"></i>Control (sin avisos)</span></div>
+
+<h2>1. Antes y después de cada persona</h2>
+<p>Cada línea fina es una persona; la gruesa, la mediana del grupo.</p>
+<div style="display:flex;flex-wrap:wrap;gap:12px">{''.join(prepost)}</div>
+
+<h2>2. Cambio de cada persona (después − antes)</h2>
+<p>Cada punto es una persona; la raya negra, la mediana del grupo. A la
+izquierda de la línea discontinua, el indicador bajó. La prueba principal
+(Mann-Whitney) compara estas dos filas: si quien recibe avisos cambia más que
+quien no los recibe, la diferencia no se explica por el paso del tiempo ni por
+saberse observado, que afectan a los dos grupos.</p>
+{''.join(c)}
+
+<h2>3. Media diaria de cada grupo</h2>
+<p>Media de los días válidos por día de uso (con al menos 2 personas ese
+día). Orientativa: no todas las personas empiezan los avisos el mismo día de
+uso y los días cortos no entran.</p>
+{''.join(e)}
+
+<h2>4. Pruebas</h2>
+<div style="overflow-x:auto"><table>
+<tr><th>Prueba</th><th>n</th><th>Mediana del cambio</th><th>p (una cola)</th>
+<th>p (dos colas)</th><th>r</th><th style="text-align:left">Nota</th></tr>
+{''.join(trs)}
+</table></div>
+<p>p de una cola: en la dirección de la hipótesis (que el indicador baje),
+declarada antes de ver los datos. r: tamaño del efecto de rangos biserial
+(−1 a 1; en Mann-Whitney, −1 = todo el grupo con avisos bajó más que todo el
+control). Orientación: |r| ≥ 0.1 pequeño, ≥ 0.3 medio, ≥ 0.5 grande.</p>
 </body></html>"""
 
 
 def write_reports(out_dir: Path, summaries: Sequence[dict],
                   days_by_code: Dict[str, List[dict]],
                   hourly_by_code: Dict[str, List[dict]],
-                  dev_threshold: float, bands: Sequence[float]) -> List[Path]:
+                  dev_threshold: float, bands: Sequence[float],
+                  tests: Sequence[dict] = ()) -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
-    mb = out_dir / "linea_base_multiple.html"
-    mb.write_text(multiple_baseline_html(summaries, days_by_code),
+    ev = out_dir / "evolucion_participantes.html"
+    ev.write_text(evolution_html(summaries, days_by_code), encoding="utf-8")
+    paths.append(ev)
+    gc = out_dir / "comparacion_grupos.html"
+    gc.write_text(group_comparison_html(summaries, days_by_code, tests),
                   encoding="utf-8")
-    paths.append(mb)
+    paths.append(gc)
     for s in summaries:
         code = s["participante"]
         p = out_dir / f"reporte_{code}.html"

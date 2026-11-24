@@ -16,16 +16,16 @@ Cada participante usa la app en su propio equipo durante ~15 días de uso:
 Comparar A con B en la misma persona es lo que permite atribuir un cambio al
 sistema y no a la costumbre o al azar.
 
-Línea base múltiple con control (diseño elegido, 2026-11-12)
------------------------------------------------------------
-Los participantes del grupo de intervención no empiezan a recibir avisos el
-mismo día: cada uno tiene su propia duración de línea base
-(`dias_linea_base` del perfil: 3, 5 o 7 días, sorteados). Si cada uno
-mejora justo cuando empiezan SUS avisos, y no antes, la mejora se atribuye al
-sistema y no a una causa común (la semana, la novedad, saberse observado).
-El grupo de control usa la app todo el estudio sin recibir nunca avisos (fase
-"control"): muestra qué cambia solo por el paso del tiempo. Ver Kratochwill
-et al. (2010).
+Preprueba, posprueba y grupo de control (diseño elegido, 2026-11-19)
+-------------------------------------------------------------------
+Todos los participantes miden primero 5 días de línea base sin avisos
+(`baseline_days`). Después, el grupo de intervención recibe avisos y el
+grupo de control sigue usando la app sin recibirlos nunca (fase
+"control"). Se compara cuánto cambia cada persona y si cambia más quien
+recibe avisos: así se descuentan las diferencias entre personas y lo que
+cambia solo con el tiempo o por saberse observado. El perfil admite otra
+duración (`dias_linea_base`) por compatibilidad con el diseño anterior de
+línea base múltiple, pero el protocolo usa 5 para todos.
 
 Por qué "días válidos" y no días de calendario
 ----------------------------------------------

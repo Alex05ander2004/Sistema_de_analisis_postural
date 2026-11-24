@@ -101,32 +101,9 @@ class TestSedentaryAlert:
         assert st["sitting_min"] >= 0
 
 
-class TestBreakAfter:
+class TestInactivityInDailySummary:
 
-    def _data(self, present):
-        rows = _rows([5.0] * len(present), present=present)
-        for r, d in zip(rows, fa.row_durations(rows)):
-            r["_dur"] = d
-        return rows, [r["timestamp"] for r in rows]
-
-    def test_break_within_window(self):
-        present = [True] * 100 + [False] * 70 + [True] * 30
-        rows, ts = self._data(present)
-        s = fa.break_after(10.0, ts, rows, fa.FieldConfig(), within_sec=600)
-        assert s == 90.0
-
-    def test_no_break_in_time(self):
-        present = [True] * 200
-        rows, ts = self._data(present)
-        assert fa.break_after(10.0, ts, rows, fa.FieldConfig(),
-                              within_sec=60) is None
-
-    def test_short_absence_does_not_count(self):
-        present = [True] * 50 + [False] * 30 + [True] * 100
-        rows, ts = self._data(present)
-        assert fa.break_after(0.0, ts, rows, fa.FieldConfig()) is None
-
-    def test_daily_summary_has_the_response_indicator(self, tmp_path):
+    def test_daily_summary_counts_inactivity_alerts(self, tmp_path):
         day = (date.today() - timedelta(days=3)).isoformat()
         db = tmp_path / "h.db"
         make_field_db(db, "P01", [{
@@ -138,8 +115,10 @@ class TestBreakAfter:
         data = fa.collect_field_data(sessions, {}, fa.FieldConfig())
         row = fa.daily_summary(data["P01"], fa.FieldConfig())[0]
         assert row["alertas_inactividad"] == 2
-        assert row["pct_pausa_tras_aviso_inactividad"] == 50.0
-        assert row["pausa_tras_aviso_mediana_s"] == 100.0
+        # El efecto se mide con la evolución (pausas por hora, tramo sin
+        # pausa), no con la reacción inmediata a cada aviso.
+        assert "pct_pausa_tras_aviso_inactividad" not in row
+        assert row["pausas"] >= 1
 
 
 class TestPersonalHistory:

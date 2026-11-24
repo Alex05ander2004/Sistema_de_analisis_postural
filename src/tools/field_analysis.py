@@ -25,11 +25,6 @@ cuánta duración. Por día y participante:
                         bostezos detectados.
   Pausas activas        nº de ausencias ≥ 60 s, tiempo ausente, y el tramo
                         más largo sentado sin pausa (inactividad física).
-                        Tras cada alerta de inactividad: si hubo pausa en
-                        los 10 min siguientes y a los cuántos segundos.
-  Respuesta             segundos hasta corregir la postura tras cada episodio
-                        cervical detectado (con aviso en la intervención,
-                        espontánea en la línea base).
   Deterioro             primera hora frente a última hora de la jornada.
   Autorreporte          dolor de cuello, cansancio visual y somnolencia (0–10).
 
@@ -76,11 +71,10 @@ class FieldConfig:
     max_gap_sec: float = 5.0             # hueco mayor = sin datos (pausa)
     break_min_sec: float = 60.0          # ausencia mínima para contar pausa
     block_gap_sec: float = 300.0         # pausa breve que no rompe un bloque
-    correction_window_sec: float = 30.0
-    sedentary_response_sec: float = 600.0  # plazo para levantarse tras el aviso
     valid_day_min_minutes: float = 120.0
     valid_day_min_block_minutes: float = 60.0
     baseline_days: int = 5               # study.field.baseline_days
+    baseline_min_minutes: float = 120.0  # study.field.baseline_min_minutes
     min_valid_days_baseline: int = 3
     min_valid_days_intervention: int = 6
 
@@ -97,10 +91,9 @@ class FieldConfig:
             min_distance_m=float(cam.get("min_distance_m", 0.50)),
             cervical_window_sec=float(post.get("cervical_alert_window_sec", 5.0)),
             break_min_sec=float(cfg.get("sedentary", {}).get("break_min_sec", 60.0)),
-            sedentary_response_sec=60.0 * float(
-                cfg.get("sedentary", {}).get("response_window_min", 10.0)),
             valid_day_min_minutes=float(fld.get("valid_day_min_minutes", 120)),
             baseline_days=int(fld.get("baseline_days", 5)),
+            baseline_min_minutes=float(fld.get("baseline_min_minutes", 120)),
             valid_day_min_block_minutes=float(
                 fld.get("valid_day_min_block_minutes", 60)),
             min_valid_days_baseline=int(
@@ -196,40 +189,6 @@ def correction_after(event_ts: float, limit: float,
         dev = r.get("cervical_deviation")
         if dev is not None and dev <= limit:
             return r["timestamp"] - event_ts
-    return None
-
-
-def break_after(event_ts: float, ts: Sequence[float], rows: Sequence[dict],
-                cfg: "FieldConfig", within_sec: float = 600.0) -> Optional[float]:
-    """
-    Segundos desde event_ts hasta el inicio de la primera pausa activa
-    (ausencia >= cfg.break_min_sec) que empiece dentro de `within_sec`.
-
-    Es la respuesta a la alerta de inactividad: con aviso en la intervención,
-    espontánea en la línea base. Un hueco sin datos mayor que max_gap_sec
-    corta la búsqueda (no se sabe qué pasó) y devuelve None, igual que no
-    haber hecho la pausa a tiempo.
-    """
-    i = bisect_right(ts, event_ts)
-    prev = event_ts
-    run_start, run = None, 0.0
-    for r in rows[i:]:
-        t = r["timestamp"]
-        if t - prev > cfg.max_gap_sec:
-            return None
-        prev = t
-        if _present(r):
-            run_start, run = None, 0.0
-            if t - event_ts > within_sec:
-                return None
-            continue
-        if run_start is None:
-            if t - event_ts > within_sec:
-                return None
-            run_start = t
-        run += r.get("_dur", 1.0)
-        if run >= cfg.break_min_sec:
-            return run_start - event_ts
     return None
 
 
@@ -487,7 +446,6 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
     for e in pd.suppressed:
         sup_by_day[local_date(e["timestamp"])] += 1
 
-    ts_all = [r["timestamp"] for r in pd.rows]
     out = []
     for n, day in enumerate(sorted(by_day), start=1):
         rows = by_day[day]
@@ -507,18 +465,6 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
             by_type[e["alert_type"]] += 1
         notified = sum(1 for e in evs if e.get("notified") in (1, None))
 
-        corr = []
-        for e in evs:
-            if e["alert_type"] != "cervical_angle" or e.get("threshold") is None:
-                continue
-            c = correction_after(e["timestamp"], e["threshold"], ts_all,
-                                 pd.rows, max_gap=cfg.max_gap_sec)
-            corr.append(c)
-        corr_ok = [c for c in corr if c is not None]
-        sed = [break_after(e["timestamp"], ts_all, pd.rows, cfg,
-                           cfg.sedentary_response_sec)
-               for e in evs if e["alert_type"] == "sedentary"]
-        sed_ok = [s for s in sed if s is not None]
         rep = _latest_report(pd.reports, day)
 
         valid = (ex["minutos"] >= cfg.valid_day_min_minutes
@@ -546,16 +492,6 @@ def daily_summary(pd: ParticipantData, cfg: FieldConfig) -> List[dict]:
             "alertas_bostezo": by_type["yawn"],
             "alertas_somnolencia": by_type["drowsiness"],
             "alertas_inactividad": by_type["sedentary"],
-            "episodios_cervicales_corregidos": len(corr_ok),
-            "episodios_cervicales": len(corr),
-            "correccion_mediana_s": median(corr_ok) if corr_ok else None,
-            "pct_corregidos_en_30s": (
-                None if not corr else 100 * sum(
-                    1 for c in corr_ok if c <= cfg.correction_window_sec)
-                / len(corr)),
-            "pct_pausa_tras_aviso_inactividad": (
-                None if not sed else 100 * len(sed_ok) / len(sed)),
-            "pausa_tras_aviso_mediana_s": median(sed_ok) if sed_ok else None,
         })
         row.update(fl)
         row.update({
@@ -599,21 +535,27 @@ COMPARED = (
     ("pct_hombros_asimetricos", "% del tiempo con hombros asimétricos"),
     ("pct_demasiado_cerca", "% del tiempo demasiado cerca"),
     ("perclos_medio", "PERCLOS medio"),
-    ("correccion_mediana_s", "Segundos hasta corregir (mediana)"),
     ("pausas_por_hora", "Pausas activas por hora"),
     ("tramo_max_sin_pausa_min", "Tramo más largo sin pausa (min)"),
-    ("pct_pausa_tras_aviso_inactividad",
-     "% de avisos de inactividad seguidos de pausa"),
     ("dolor_cuello", "Dolor de cuello (0–10)"),
     ("cansancio_visual", "Cansancio visual (0–10)"),
     ("somnolencia", "Somnolencia (0–10)"),
 )
 
 
+# Para estos indicadores, BAJAR es mejorar (el resto: subir es mejorar).
+LOWER_IS_BETTER = {
+    "pct_desviado", "delta_theta_media", "episodio_max_s",
+    "episodios_sostenidos_por_hora", "alertas_detectadas_por_hora",
+    "pct_hombros_asimetricos", "pct_demasiado_cerca", "perclos_medio",
+    "tramo_max_sin_pausa_min", "dolor_cuello",
+    "cansancio_visual", "somnolencia",
+}
+
+
 # Indicadores con tamaño del efecto NAP: (clave, ¿menor es mejor?).
 NAP_INDICATORS = (
     ("pct_desviado", True),
-    ("correccion_mediana_s", True),
     ("pausas_por_hora", False),
 )
 
@@ -638,20 +580,39 @@ def nap(base: Sequence[float], interv: Sequence[float],
     return score / (len(base) * len(interv))
 
 
+def control_cut_day(days: Sequence[dict], cfg: FieldConfig) -> Optional[int]:
+    """
+    Día de uso en que empieza el periodo «después» de un participante de
+    control: el primero tras completar `baseline_days` días con al menos
+    `baseline_min_minutes`. Es la MISMA regla con la que la app empieza los
+    avisos del grupo de intervención (field_study.decide_phase), para que
+    los dos grupos tengan la misma línea base.
+    """
+    qualified = 0
+    for d in sorted(days, key=lambda d: d["dia_uso"]):
+        if qualified >= cfg.baseline_days:
+            return d["dia_uso"]
+        if (d.get("minutos") or 0) >= cfg.baseline_min_minutes:
+            qualified += 1
+    return None
+
+
 def participant_summary(pd: ParticipantData, days: Sequence[dict],
                         cfg: FieldConfig, planned_days: int = 15) -> dict:
     """
     Una fila por participante, lista para una prueba pareada (Wilcoxon o t
     pareada): media de los días VÁLIDOS de cada fase y su diferencia.
+    Columnas _base = antes (línea base), _interv = después (con avisos en el
+    grupo de intervención; sin avisos en el control).
     """
     valid = [d for d in days if d["dia_valido"] == "si"]
     is_control = any(d["fase"] == "control" for d in days)
     if is_control:
-        # El control nunca recibe avisos. Para ver si cambia solo con el
-        # tiempo, se le aplica un corte de referencia en el día en que
-        # empezarían los avisos con la línea base por defecto.
-        base = [d for d in valid if d["dia_uso"] <= cfg.baseline_days]
-        interv = [d for d in valid if d["dia_uso"] > cfg.baseline_days]
+        # El control nunca recibe avisos: su «después» empieza cuando
+        # completa la misma línea base que el grupo de intervención.
+        cut = control_cut_day(days, cfg)
+        base = [d for d in valid if cut is None or d["dia_uso"] < cut]
+        interv = [d for d in valid if cut is not None and d["dia_uso"] >= cut]
     else:
         base = [d for d in valid if d["fase"] == "linea_base"]
         interv = [d for d in valid if d["fase"] == "intervencion"]
@@ -659,11 +620,13 @@ def participant_summary(pd: ParticipantData, days: Sequence[dict],
           and len(interv) >= cfg.min_valid_days_intervention)
     first_interv = next((d["dia_uso"] for d in days
                          if d["fase"] == "intervencion"), None)
+    post_start = cut if is_control else first_interv
     reports = [d for d in days if d["autorreporte"] in ("si", "retrospectivo")]
     out = {
         "participante": pd.code,
         "grupo": "control" if is_control else "intervencion",
         "dia_inicio_avisos": first_interv,
+        "dia_inicio_despues": post_start,
         "dias_uso": len(days),
         "dias_validos": len(valid),
         "dias_validos_linea_base": len(base),
@@ -694,59 +657,156 @@ def participant_summary(pd: ParticipantData, days: Sequence[dict],
     return out
 
 
+def _paired_rank_biserial(diffs: Sequence[float]) -> Optional[float]:
+    """r de rangos biserial de Wilcoxon: (W+ - W-) / (W+ + W-) sobre las
+    diferencias no nulas; -1 = todos bajan, +1 = todos suben."""
+    nz = [d for d in diffs if abs(d) > 1e-12]
+    if not nz:
+        return None
+    ranked = sorted(nz, key=abs)
+    ranks, k = {}, 0
+    while k < len(ranked):                  # rangos medios en empates
+        j = k
+        while j + 1 < len(ranked) and abs(ranked[j + 1]) == abs(ranked[k]):
+            j += 1
+        for m in range(k, j + 1):
+            ranks.setdefault(abs(ranked[m]), (k + j + 2) / 2)
+        k = j + 1
+    wp = sum(ranks[abs(d)] for d in nz if d > 0)
+    wn = sum(ranks[abs(d)] for d in nz if d < 0)
+    return (wp - wn) / (wp + wn)
+
+
+def _cliff_delta(a: Sequence[float], b: Sequence[float]) -> Optional[float]:
+    """r de rangos biserial de Mann-Whitney (= delta de Cliff):
+    (pares a > b - pares a < b) / (na * nb). -1 = todo `a` por debajo de
+    todo `b`; 0 = sin diferencia."""
+    if not a or not b:
+        return None
+    gt = sum(1 for x in a for y in b if x > y)
+    lt = sum(1 for x in a for y in b if x < y)
+    return (gt - lt) / (len(a) * len(b))
+
+
+TEST_WITHIN_INTERV = "wilcoxon_intervencion"
+TEST_WITHIN_CONTROL = "wilcoxon_control"
+TEST_BETWEEN = "mann_whitney_cambio"
+TEST_NAMES = {
+    TEST_WITHIN_INTERV: "Wilcoxon: grupo con avisos, antes vs después",
+    TEST_WITHIN_CONTROL: "Wilcoxon: grupo control, antes vs después",
+    TEST_BETWEEN: "Mann-Whitney: cambio con avisos vs cambio del control",
+}
+
+
 def group_tests(summaries: Sequence[dict]) -> List[dict]:
     """
-    Prueba de grupo, línea base frente a intervención, con los participantes
-    del grupo de intervención válidos para el análisis.
+    Diseño con preprueba, posprueba y grupo de control.
+    Con los participantes válidos para el análisis, por indicador:
 
-    Wilcoxon de rangos con signo (exacto con muestras pequeñas) y tamaño del
-    efecto r de rangos biserial = (W+ - W-) / (W+ + W-) sobre las diferencias
-    no nulas: -1 = todos bajan, +1 = todos suben. Con menos de 6 pares la
-    prueba exacta no puede dar p < 0.05 y se indica.
+      1. Wilcoxon de rangos con signo en el grupo de intervención: ¿cambia
+         del antes (línea base) al después (con avisos)?
+      2. Lo mismo en el grupo de control (después = sin avisos): ¿cambia
+         solo con el tiempo o por saberse observado?
+      3. PRUEBA PRINCIPAL. U de Mann-Whitney sobre el cambio (después -
+         antes) de cada persona: ¿cambia más quien recibe avisos que quien
+         no? Comparar el cambio, y no solo el «después», descuenta las
+         diferencias entre personas que ya había antes de empezar.
+
+    p_una_cola va en la dirección de la hipótesis (mejorar: bajar, salvo en
+    los indicadores en que subir es mejor) y debe declararse antes de ver
+    los datos; también se da p_dos_colas. Tamaño del efecto: r de rangos
+    biserial (-1 a 1; negativo = el primer grupo/periodo queda más bajo).
+    Las pruebas son exactas con muestras pequeñas y se indica cuando hay
+    demasiado pocas personas para poder llegar a p < 0.05.
     """
     try:
-        from scipy.stats import wilcoxon
-    except ImportError:            # pragma: no cover - scipy viene con la app
-        wilcoxon = None
-    pool = [s for s in summaries if s.get("grupo") != "control"
-            and s.get("valido_para_analisis") == "si"]
+        from scipy.stats import mannwhitneyu, wilcoxon
+    except ImportError:            # pragma: no cover - solo sin scipy
+        mannwhitneyu = wilcoxon = None
+    from math import comb
+
+    valid = [s for s in summaries if s.get("valido_para_analisis") == "si"]
+    groups = {
+        "intervencion": [s for s in valid if s.get("grupo") != "control"],
+        "control": [s for s in valid if s.get("grupo") == "control"],
+    }
     out = []
     for key, label in COMPARED:
-        pairs = [(s[f"{key}_base"], s[f"{key}_interv"]) for s in pool
-                 if isinstance(s.get(f"{key}_base"), (int, float))
-                 and isinstance(s.get(f"{key}_interv"), (int, float))]
-        diffs = [i - b for b, i in pairs]
-        nz = [d for d in diffs if abs(d) > 1e-12]
-        row = {"indicador": key, "descripcion": label, "n_pares": len(pairs),
-               "mediana_base": median([b for b, _ in pairs]) if pairs else None,
-               "mediana_interv": median([i for _, i in pairs]) if pairs else None,
-               "mediana_cambio": median(diffs) if diffs else None,
-               "W": None, "p": None, "r_biserial": None,
-               "nota": ""}
-        if nz:
-            ranked = sorted(nz, key=abs)
-            ranks, k = {}, 0
-            while k < len(ranked):          # rangos medios en empates
-                j = k
-                while j + 1 < len(ranked) and abs(ranked[j + 1]) == abs(ranked[k]):
-                    j += 1
-                for m in range(k, j + 1):
-                    ranks.setdefault(abs(ranked[m]), (k + j + 2) / 2)
-                k = j + 1
-            wp = sum(ranks[abs(d)] for d in nz if d > 0)
-            wn = sum(ranks[abs(d)] for d in nz if d < 0)
-            row["r_biserial"] = (wp - wn) / (wp + wn)
-        if wilcoxon is not None and len(nz) >= 1:
+        lower = key in LOWER_IS_BETTER
+        alt = "less" if lower else "greater"
+        pairs = {}
+        for g, members in groups.items():
+            pairs[g] = [(s[f"{key}_base"], s[f"{key}_interv"])
+                        for s in members
+                        if isinstance(s.get(f"{key}_base"), (int, float))
+                        and isinstance(s.get(f"{key}_interv"), (int, float))]
+        changes = {g: [i - b for b, i in p] for g, p in pairs.items()}
+
+        def row(test):
+            return {"indicador": key, "descripcion": label,
+                    "prueba": test, "nombre_prueba": TEST_NAMES[test],
+                    "mejora_si": "baja" if lower else "sube",
+                    "n_intervencion": None, "n_control": None,
+                    "mediana_antes": None, "mediana_despues": None,
+                    "mediana_cambio_intervencion": None,
+                    "mediana_cambio_control": None,
+                    "estadistico": None, "p_una_cola": None,
+                    "p_dos_colas": None, "r_biserial": None, "nota": ""}
+
+        # 1 y 2: dentro de cada grupo
+        for g, test in (("intervencion", TEST_WITHIN_INTERV),
+                        ("control", TEST_WITHIN_CONTROL)):
+            p, d = pairs[g], changes[g]
+            r = row(test)
+            r[f"n_{g}"] = len(p)
+            if p:
+                r["mediana_antes"] = median(b for b, _ in p)
+                r["mediana_despues"] = median(i for _, i in p)
+                r[f"mediana_cambio_{g}"] = median(d)
+            r["r_biserial"] = _paired_rank_biserial(d)
+            if wilcoxon is not None and any(abs(x) > 1e-12 for x in d):
+                try:
+                    one = wilcoxon(d, zero_method="wilcox", alternative=alt)
+                    two = wilcoxon(d, zero_method="wilcox")
+                    r["estadistico"] = float(two.statistic)
+                    r["p_una_cola"] = float(one.pvalue)
+                    r["p_dos_colas"] = float(two.pvalue)
+                except ValueError as exc:
+                    r["nota"] = str(exc)
+            if len(p) < 6:                  # exacta: mínimo 1/2^n
+                r["nota"] = (r["nota"] + " " if r["nota"] else "") + (
+                    "menos de 5 personas: Wilcoxon no puede dar p < 0.05"
+                    if len(p) < 5 else
+                    "5 personas: solo la prueba de una cola puede dar "
+                    "p < 0.05")
+            out.append(r)
+
+        # 3: cambio de un grupo frente al del otro
+        ci, cc = changes["intervencion"], changes["control"]
+        r = row(TEST_BETWEEN)
+        r["n_intervencion"], r["n_control"] = len(ci), len(cc)
+        r["mediana_cambio_intervencion"] = median(ci) if ci else None
+        r["mediana_cambio_control"] = median(cc) if cc else None
+        r["r_biserial"] = _cliff_delta(ci, cc)
+        if mannwhitneyu is not None and ci and cc:
             try:
-                res = wilcoxon([b for b, _ in pairs], [i for _, i in pairs],
-                               zero_method="wilcox", method="auto")
-                row["W"], row["p"] = float(res.statistic), float(res.pvalue)
+                # Exacta con muestras pequeñas sin empates (con empates o
+                # muchos datos, scipy elige la aproximación adecuada).
+                method = ("exact" if len(set(ci + cc)) == len(ci + cc)
+                          and len(ci) + len(cc) <= 40 else "auto")
+                one = mannwhitneyu(ci, cc, alternative=alt, method=method)
+                two = mannwhitneyu(ci, cc, alternative="two-sided",
+                                   method=method)
+                r["estadistico"] = float(two.statistic)
+                r["p_una_cola"] = float(one.pvalue)
+                r["p_dos_colas"] = float(two.pvalue)
             except ValueError as exc:
-                row["nota"] = str(exc)
-        if len(pairs) < 6:
-            row["nota"] = (row["nota"] + " " if row["nota"] else "") + (
-                "menos de 6 pares: la prueba exacta no puede dar p < 0.05")
-        out.append(row)
+                r["nota"] = str(exc)
+        if not ci or not cc or 1 / comb(len(ci) + len(cc), len(ci)) > 0.05:
+            r["nota"] = (r["nota"] + " " if r["nota"] else "") + (
+                "muy pocas personas en algún grupo: Mann-Whitney no puede "
+                "dar p < 0.05")
+        out.append(r)
     return out
 
 

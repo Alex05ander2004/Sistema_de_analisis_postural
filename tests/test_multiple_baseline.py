@@ -1,13 +1,15 @@
 """
 test_multiple_baseline.py
 -------------------------
-Diseño de línea base múltiple con control (elegido el 2026-11-12):
+Diseño experimental con preprueba, posprueba y grupo de control
+(2026-11-19; antes, línea base múltiple con control):
 
-  - perfil: grupo (intervención/control) y días de línea base propios;
-  - fase: cada participante empieza sus avisos cuando cumple SU línea base;
-    el control queda en fase "control" y nunca avisa;
-  - análisis: NAP, día de inicio de avisos, corte de referencia del control;
-  - figura de línea base múltiple.
+  - perfil: grupo (intervención/control) y días de línea base;
+  - fase: el grupo de intervención empieza sus avisos al cumplir su línea
+    base; el control queda en fase "control" y nunca avisa;
+  - análisis: el corte del control usa la misma regla que la app, NAP,
+    Wilcoxon en cada grupo y Mann-Whitney del cambio entre grupos;
+  - figuras: evolución por participante y comparación entre grupos.
 
 Autor: Tesis Huisa Perez, UNSA 2026
 """
@@ -28,7 +30,7 @@ from src.fusion.fusion_fsm import AlertEvent, AlertType
 from src.study import field_study as fs
 from src.tools import export_study as ex
 from src.tools import field_analysis as fa
-from src.tools.field_report import multiple_baseline_html
+from src.tools.field_report import evolution_html, group_comparison_html
 
 from tests.test_field_study import (FIELD_CONFIG, _days, _field_thread, _wait,
                                     _run_session, make_field_db)
@@ -152,36 +154,64 @@ def _staggered_db(path, code, start, n=10, control=False):
     make_field_db(path, code, rows)
 
 
-class TestMultipleBaselineExport:
+class TestControlCut:
 
-    def test_summary_has_group_start_and_nap(self, tmp_path):
+    def test_same_rule_as_the_app(self):
+        cfg = fa.FieldConfig(baseline_days=3, baseline_min_minutes=120)
+        mins = [150, 40, 130, 200, 150, 150]       # el día 2 no cuenta
+        days = [{"dia_uso": k + 1, "minutos": m} for k, m in enumerate(mins)]
+        assert fa.control_cut_day(days, cfg) == 5
+
+    def test_never_completes_the_baseline(self):
+        cfg = fa.FieldConfig(baseline_days=5)
+        days = [{"dia_uso": k + 1, "minutos": 150} for k in range(4)]
+        assert fa.control_cut_day(days, cfg) is None
+
+
+class TestGroupDesignExport:
+
+    def test_summary_tests_and_figures(self, tmp_path):
         cfg = json.loads(json.dumps(FIELD_CONFIG))
         cfg["study"]["field"]["baseline_days"] = 4
+        cfg["study"]["field"]["baseline_min_minutes"] = 60
         cfg_p = tmp_path / "thresholds.json"
         cfg_p.write_text(json.dumps(cfg), encoding="utf-8")
         _staggered_db(tmp_path / "a.db", "P01", start=5)
-        _staggered_db(tmp_path / "b.db", "P02", start=7)
+        _staggered_db(tmp_path / "b.db", "P02", start=5)
         _staggered_db(tmp_path / "c.db", "P03", start=1, control=True)
         res = ex.export([tmp_path / "a.db", tmp_path / "b.db",
                          tmp_path / "c.db"], tmp_path / "out", cfg_p)
         by = {s["participante"]: s for s in res["field"]["participants"]}
         assert by["P01"]["grupo"] == "intervencion"
         assert by["P01"]["dia_inicio_avisos"] == 5
-        assert by["P02"]["dia_inicio_avisos"] == 7
+        assert by["P01"]["dia_inicio_despues"] == 5
         assert by["P01"]["nap_pct_desviado"] == pytest.approx(1.0)
+        # El control: sin avisos, corte el mismo día que el otro grupo
         assert by["P03"]["grupo"] == "control"
         assert by["P03"]["dia_inicio_avisos"] is None
-        # El control no cambia con el tiempo: NAP alrededor de 0.5
+        assert by["P03"]["dia_inicio_despues"] == 5
         assert by["P03"]["nap_pct_desviado"] == pytest.approx(0.5, abs=0.15)
-        fig = (tmp_path / "out" / "reportes" / "linea_base_multiple.html")
-        assert fig.exists()
-        html = fig.read_text("utf-8")
-        assert html.index("P01") < html.index("P02") < html.index("P03")
-        assert "control (sin avisos)" in html
+        tests = [t for t in res["field"]["tests"]
+                 if t["indicador"] == "pct_desviado"]
+        assert {t["prueba"] for t in tests} == {
+            fa.TEST_WITHIN_INTERV, fa.TEST_WITHIN_CONTROL, fa.TEST_BETWEEN}
+        between = next(t for t in tests if t["prueba"] == fa.TEST_BETWEEN)
+        assert (between["n_intervencion"], between["n_control"]) == (2, 1)
+        assert between["r_biserial"] == pytest.approx(-1.0)
+        assert "muy pocas personas" in between["nota"]
+        rep = tmp_path / "out" / "reportes"
+        evo = (rep / "evolucion_participantes.html").read_text("utf-8")
+        assert evo.index("P01") < evo.index("P02") < evo.index("P03")
+        assert "control (sin avisos) · corte el día 5" in evo
+        comp = (rep / "comparacion_grupos.html").read_text("utf-8")
+        assert "Mann-Whitney" in comp and "Control (sin avisos)" in comp
+        csv_text = (tmp_path / "out" / "prueba_grupo.csv").read_text("utf-8")
+        assert "mann_whitney_cambio" in csv_text
 
-    def test_figure_without_data_does_not_crash(self):
-        html = multiple_baseline_html([{"participante": "P01"}], {})
-        assert "P01" in html
+    def test_figures_without_data_do_not_crash(self):
+        assert "P01" in evolution_html([{"participante": "P01"}], {})
+        html = group_comparison_html([{"participante": "P01"}], {}, [])
+        assert "Comparación entre grupos" in html
 
 
 class TestStopSession:
@@ -209,33 +239,71 @@ class TestStopSession:
 
 # ------------------------------------------------- prueba de grupo
 
-def _summary(code, base, interv, grupo="intervencion", ok="si"):
+def _summary(code, base, interv, grupo="intervencion", ok="si", key=None):
+    key = key or "pct_desviado"
     return {"participante": code, "grupo": grupo, "valido_para_analisis": ok,
-            "pct_desviado_base": base, "pct_desviado_interv": interv}
+            f"{key}_base": base, f"{key}_interv": interv}
+
+
+def _test(summaries, prueba, key="pct_desviado"):
+    return next(t for t in fa.group_tests(summaries)
+                if t["indicador"] == key and t["prueba"] == prueba)
 
 
 class TestGroupTests:
 
-    def _main(self, summaries):
-        return next(t for t in fa.group_tests(summaries)
-                    if t["indicador"] == "pct_desviado")
+    def _study(self):
+        interv = [_summary(f"P{i}", 30 + i, 20 + i * 0.5) for i in range(6)]
+        # El control apenas cambia (sin empates: prueba exacta)
+        control = [_summary(f"C{i}", 30 + i, 30 + i + (i - 2.4) / 10,
+                            grupo="control") for i in range(6)]
+        return interv + control
 
-    def test_all_improve(self):
-        rows = [_summary(f"P{i}", 30 + i, 20 + i * 0.5) for i in range(6)]
-        t = self._main(rows)
-        assert t["n_pares"] == 6
+    def test_within_intervention(self):
+        t = _test(self._study(), fa.TEST_WITHIN_INTERV)
+        assert t["n_intervencion"] == 6
         assert t["r_biserial"] == -1.0
-        assert t["p"] == pytest.approx(0.03125)
+        assert t["p_una_cola"] == pytest.approx(1 / 64)
+        assert t["p_dos_colas"] == pytest.approx(2 / 64)
         assert t["nota"] == ""
 
-    def test_control_and_invalid_are_excluded(self):
+    def test_within_control_does_not_change(self):
+        t = _test(self._study(), fa.TEST_WITHIN_CONTROL)
+        assert t["n_control"] == 6
+        assert t["p_dos_colas"] > 0.5
+
+    def test_between_groups_is_the_main_test(self):
+        t = _test(self._study(), fa.TEST_BETWEEN)
+        assert (t["n_intervencion"], t["n_control"]) == (6, 6)
+        assert t["r_biserial"] == -1.0           # todos bajaron más
+        assert t["p_una_cola"] == pytest.approx(1 / 924)
+        assert t["p_dos_colas"] == pytest.approx(2 / 924)
+        assert t["mediana_cambio_intervencion"] < t["mediana_cambio_control"]
+        assert t["nota"] == ""
+
+    def test_direction_when_higher_is_better(self):
+        rows = ([_summary(f"P{i}", 0.5, 1.2 + i / 10, key="pausas_por_hora")
+                 for i in range(6)]
+                + [_summary(f"C{i}", 0.5, 0.5 + (i - 3) / 100,
+                            grupo="control", key="pausas_por_hora")
+                   for i in range(6)])
+        t = _test(rows, fa.TEST_BETWEEN, "pausas_por_hora")
+        assert t["mejora_si"] == "sube"
+        assert t["p_una_cola"] < 0.01
+
+    def test_invalid_are_excluded_and_small_groups_flagged(self):
         rows = [_summary("P1", 30, 20), _summary("P2", 30, 25),
-                _summary("C1", 30, 10, grupo="control"),
+                _summary("C1", 30, 31, grupo="control"),
                 _summary("P3", 30, 10, ok="no")]
-        t = self._main(rows)
-        assert t["n_pares"] == 2
-        assert "menos de 6 pares" in t["nota"]
+        within = _test(rows, fa.TEST_WITHIN_INTERV)
+        assert within["n_intervencion"] == 2
+        assert "menos de 5 personas" in within["nota"]
+        between = _test(rows, fa.TEST_BETWEEN)
+        assert (between["n_intervencion"], between["n_control"]) == (2, 1)
+        assert "muy pocas personas" in between["nota"]
 
     def test_no_data(self):
-        t = self._main([])
-        assert t["n_pares"] == 0 and t["p"] is None
+        for prueba in (fa.TEST_WITHIN_INTERV, fa.TEST_WITHIN_CONTROL,
+                       fa.TEST_BETWEEN):
+            t = _test([], prueba)
+            assert t["p_una_cola"] is None and t["p_dos_colas"] is None

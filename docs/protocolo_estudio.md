@@ -3,7 +3,8 @@
 > Cómo se recogen los datos para el Capítulo IV: quiénes participan, cuánto
 > tiempo, qué hace el investigador, qué hace el participante y cómo salen los
 > resultados. Versión 2 (2026-10-29): estudio de **campo de 15 días** con
-> **validación al instalar**.
+> **validación al instalar**. Versión 3 (2026-11-19): diseño
+> **experimental con preprueba, posprueba y grupo de control**.
 
 ---
 
@@ -12,55 +13,75 @@
 | Parte | Cuándo | Dónde | Duración | Qué mide |
 |---|---|---|---|---|
 | **A. Validación** | Día 0, al instalar | Equipo del participante, con el investigador presente | ~25 min | ¿El sistema **acierta**? Sensibilidad, especificidad y precisión (matriz de confusión) |
-| **B1. Línea base** | Días de uso 1 a 3, 5 o 7 (sorteado por participante) | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
-| **B2. Intervención** | Desde el día 4, 6 u 8 hasta el 15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
-| **Control** | Días 1–15, sin avisos nunca | Igual | ≥ 2 h/día | Qué cambia solo con el tiempo y por saberse observado |
+| **B1. Línea base (preprueba)** | Días de uso 1 a 5, **los dos grupos** | En casa o en el trabajo, sin investigador | ≥ 2 h/día | Cómo se sienta la persona **sin** avisos (la app mide en silencio) |
+| **B2. Posprueba, grupo de intervención** | Desde el día 6 hasta el 15 | Igual | ≥ 2 h/día | Cómo se sienta **con** avisos |
+| **B2. Posprueba, grupo de control** | Desde el día 6 hasta el 15, sin avisos nunca | Igual | ≥ 2 h/día | Qué cambia solo con el tiempo y por saberse observado |
 | **C. Cierre** | Al terminar | — | 10 min | Exportar los datos, cuestionarios de salida |
 
 Las dos partes responden preguntas distintas. En casa nadie anota qué postura
 tenía la persona en cada momento, así que **la precisión solo puede salir de la
 parte A**. El **efecto del sistema** solo puede salir de la parte B.
 
-### Diseño: línea base múltiple con control (decidido con el asesor, 2026-11-12)
+### Diseño: experimental con preprueba, posprueba y grupo de control (2026-11-19)
+
+Antes (2026-11-12) era una línea base múltiple con 2 controles. Se cambió
+para comparar **quien usa el sistema con quien no lo usa**, como pidió el
+ingeniero, sin perder la línea base (Hernández-Sampieri y Mendoza, 2018).
+Como el grupo se asigna **por sorteo** (dentro de parejas parecidas), es el
+diseño **experimental** con preprueba, posprueba y grupo de control. Si no se
+pudiera sortear (p. ej. grupos ya formados), pasaría a ser
+**cuasiexperimental** («con grupos intactos») y habría que decirlo así.
 
 - **Todos** reciben el día 0 la misma hoja de recomendaciones ergonómicas
   (altura de la pantalla, distancia, pausas): es el «tratamiento
   tradicional».
-- **Grupo de intervención:** recomendaciones + software. Cada participante
-  empieza a recibir avisos en un día distinto: tras **3, 5 o 7 días** de
-  línea base (avisos desde el día de uso 4, 6 u 8), **sorteados** en partes
-  iguales (con dado o random.org; anotar el resultado antes de instalar). Se
-  configura en **⚙ Estudio → Días de línea base**.
-- **Por qué 3/5/7 y no 5/7/9:** con fines de
-  semana y días cortos, quien empezaba los avisos el día 10 no alcanzaba los
-  6 días válidos de intervención que exige el análisis en 15 días de uso.
-  Con 3/5/7, el último grupo tiene unos 8 días de intervención. La línea base
-  de 3 días cumple el estándar de Kratochwill et al. (2010) «con reservas»
-  (3 datos por fase; 5 lo cumplen sin reservas): declararlo.
-- **Grupo de control:** solo recomendaciones. Usa la app los 15 días en fase
-  «control»: mide, nunca avisa y «Mi historial» queda bloqueado. Se configura
-  en **⚙ Estudio → Grupo: Control**.
-- **Por qué:** si cada participante mejora justo cuando empiezan SUS avisos, y
-  no antes, una causa común (la semana, la novedad, saberse observado) no lo
-  explica, porque los inicios están en días distintos. El control muestra el
-  cambio sin avisos. Tres inicios distintos cumplen el criterio de calidad de
-  Kratochwill et al. (2010) para diseños de caso único.
-- **Tamaño:** **9 de intervención (3 por día de inicio) y 2 de control**
-  que terminen el estudio; reclutar 12–13 por los abandonos. La prueba de
-  Wilcoxon exacta necesita **al menos 6 participantes válidos** del grupo
-  de intervención para poder dar p < 0.05; con 9 queda margen. Si se
-  consiguen más, repartirlos igual entre los tres días de inicio y dejar
-  aproximadamente 1 de cada 5 en el control.
-
----
+- **Todos** miden primero **5 días de línea base** (preprueba): la app mide
+  pero no avisa. Cuentan los días con al menos 2 h de uso, así que los
+  avisos empiezan el día de uso 6 o algo después si hubo días cortos.
+- **Grupo de intervención:** recomendaciones + software. Desde el día 6
+  recibe avisos (posprueba con avisos).
+- **Grupo de control:** recomendaciones + la app en silencio los 15 días
+  (fase «control»): mide igual, nunca avisa y «Mi historial» queda
+  bloqueado. **No usar la app no es posible**: sin ella no hay medición.
+  Para el análisis, su «después» empieza con la misma regla que el otro
+  grupo (tras 5 días de al menos 2 h).
+- **Asignación: sorteo por parejas parecidas.** Al reclutar, formar parejas
+  de la misma ocupación y horario (dos de oficina, dos estudiantes, dos en
+  teletrabajo…) y, en cada pareja, sortear con una moneda quién va a cada
+  grupo. Anotar el resultado antes de instalar. Así ningún grupo queda solo
+  con un tipo de persona. Se configura en **⚙ Estudio → Grupo** y **Días de
+  línea base: 5**.
+- **Por qué:** las personas se sientan muy distinto entre sí (en la
+  simulación, del 14 % al 35 % del tiempo con la cabeza adelantada), más que
+  el efecto que se busca. Comparar solo el «después» de un grupo con el del
+  otro no lo detectaría (potencia ~1 de cada 3). Con la línea base, cada
+  persona se compara consigo misma y se compara **cuánto cambió** cada
+  grupo: el paso del tiempo, la novedad y saberse observado afectan a los
+  dos grupos y se descuentan.
+- **Al terminar**, se ofrece al grupo de control activar los avisos (⚙
+  Estudio → Grupo: Intervención, **después** del envío final): nadie se
+  queda sin el beneficio y facilita el reclutamiento.
 
 ## 1. Muestra
 
-**Mínimo: 11 participantes que terminen el estudio (9 de intervención, 3
-por cada día de inicio, y 2 de control). Recluta 12–13**, porque en un
-seguimiento de 15 días de uso (~3 semanas) siempre hay abandonos (equipo
-averiado, viaje, pérdida de interés). Si se consiguen más, mejor: hasta 25,
-repartidos igual entre los tres días de inicio y ~1 de cada 5 en el control.
+**Objetivo: 16 participantes que terminen el estudio (8 por grupo).
+Recluta 18–19**, porque en un seguimiento de 15 días de uso (~3 semanas)
+siempre hay abandonos (equipo averiado, viaje, pérdida de interés). **Mínimo
+aceptable: 7 por grupo (14).** Con menos de unas 12 personas en total
+conviene volver al diseño anterior (cada persona contra sí misma), que rinde
+más con muy pocas personas.
+
+Potencia estimada por simulación (4000 estudios, variabilidad entre
+personas y efecto de la simulación del 2026-11-19, α = 0.05 de una cola):
+
+| Personas que terminan | Mann-Whitney del cambio entre grupos | Wilcoxon en el grupo con avisos |
+|---|---|---|
+| 6 + 6 | 71 % | 78 % |
+| 7 + 7 | 79 % | 81 % |
+| **8 + 8** | **82 %** | **89 %** |
+
+Con dos colas, 8 + 8 da 74 % y 77 %. Los porcentajes dependen de supuestos;
+el orden entre tamaños, no.
 
 - **Inclusión:** adultos que trabajen o estudien frente a una computadora con
   Windows al menos 2 h diarias, con cámara web (integrada o externa).
@@ -77,13 +98,12 @@ repartidos igual entre los tres días de inicio y ~1 de cada 5 en el control.
   menos **10 FPS** (se ve en la ventana). Por debajo, la medición se degrada y
   ese equipo no sirve.
 
-Para la **precisión** (parte A), 11 personas × 17 tramos = ~187 tramos, con un
-margen de unos ±4 puntos en la precisión global y de ±9 puntos por condición
-(con 25 personas: ±3 y ±6–7). Para el **efecto** (parte B), el análisis
-principal es por participante (figura de línea base múltiple y NAP); la
-prueba de Wilcoxon de grupo necesita al menos 6 participantes de
-intervención válidos. **No es una muestra para generalizar a la población**
-y así debe redactarse.
+Para la **precisión** (parte A), 16 personas × 17 tramos = ~272 tramos, con un
+margen de unos ±3–4 puntos en la precisión global y de ±7–8 puntos por condición
+(con 25 personas: ±3 y ±6–7). Para el **efecto** (parte B), la prueba
+principal es la U de Mann-Whitney sobre el cambio de cada persona (con
+avisos frente a control), y la de Wilcoxon dentro de cada grupo. **No es
+una muestra para generalizar a la población** y así debe redactarse.
 
 ---
 
@@ -105,8 +125,8 @@ jornada completa; el mínimo, 2 h con un bloque de al menos 1 h.
 |---|---|---|
 | Día válido | ≥ 120 min de seguimiento **y** un bloque continuo ≥ 60 min | `valid_day_min_minutes`, `valid_day_min_block_minutes` |
 | Día que cuenta para la línea base | ≥ 120 min de seguimiento (igual que un día válido) | `baseline_min_minutes` |
-| Duración de la línea base | 3, 5 o 7 días que cuenten, según el sorteo (5 por defecto) | `dias_linea_base` del perfil; `baseline_days` |
-| Participante válido para la comparación | ≥ 3 días válidos de base y ≥ 6 de intervención | `analysis_min_valid_days_baseline`, `analysis_min_valid_days_intervention` |
+| Duración de la línea base | 5 días que cuenten, en los dos grupos | `baseline_days` (y 5 en ⚙ Estudio) |
+| Participante válido para la comparación | ≥ 3 días válidos antes y ≥ 6 después (en el control, después del corte) | `analysis_min_valid_days_baseline`, `analysis_min_valid_days_intervention` |
 | Días previstos | 15 días de uso (~3 semanas laborables) | `planned_days` |
 
 **Por qué "días de uso" y no días de calendario.** La app pasa de línea base a
@@ -142,7 +162,7 @@ seguimiento: eso es justamente una pausa activa, y se mide.
 | 5–10 | Instalar la app. Botón **⚙ Estudio**: código, modo **Laboratorio** y **FOV** (sentar a la persona a una distancia medida con cinta, p. ej. 0.60 m, escribirla y pulsar *Calcular*; luego *Guardar*) |
 | 10–13 | Colocación (cámara a la altura de los ojos, 0.50–0.70 m) y **Calibrar** → **Iniciar** |
 | 13–28 | **Bloque guiado**: 17 tramos etiquetados con el selector de condición (ver §5) |
-| 28–33 | Botón **⚙ Estudio** → modo **Campo**, **Grupo** (intervención o control) y **Días de línea base** sorteados → Guardar. Desde aquí la app está en línea base (o en control) |
+| 28–33 | Botón **⚙ Estudio** → modo **Campo**, **Grupo** según el sorteo por parejas y **Días de línea base: 5** → Guardar. Desde aquí la app está en línea base (o en control) |
 | 33–40 | Explicar al participante qué hacer (§6) y entregarle la hoja de instrucciones |
 
 ---
@@ -197,17 +217,18 @@ Bostezos y cierres de ojos son **simulados**: decláralo como limitación.
 
 **Durante los primeros días (línea base) la app no avisa.** Es intencionado y
 el participante lo sabe: la barra muestra *"Línea base: la app mide pero no
-avisa"*. Los avisos aparecen desde el día de uso 4, 6 u 8, según el sorteo
-(el grupo de control nunca los recibe).
+avisa"*. En el grupo de intervención, los avisos aparecen tras 5 días de al
+menos 2 h de uso (normalmente desde el día de uso 6). El grupo de control
+nunca los recibe.
 
 **Desde la intervención, además:**
 
 - **Aviso de pausa activa** (OE 1.3.2.3): tras 30 min seguidos frente a la
   cámara sin levantarse, la app avisa y repite cada 10 min mientras siga
   sentado. Levantarse ≥ 60 s reinicia la cuenta. En la línea base se detecta
-  igual pero en silencio, así que el exportador compara la respuesta:
-  `pct_pausa_tras_aviso_inactividad` = % de avisos seguidos de una pausa en
-  los 10 min siguientes. Valores en `config/thresholds.json → sedentary`
+  igual pero en silencio. Su efecto se mide con la evolución de las
+  **pausas por hora** y del **tramo más largo sentado sin pausa** (línea base
+  frente a intervención). Valores en `config/thresholds.json → sedentary`
   (30 min: dentro del rango de 30–60 min de la bibliografía; el especialista
   aprobó la política de avisos).
 - **Detecciones en enfriamiento:** si una condición se confirma mientras su
@@ -247,7 +268,10 @@ sesión tiene un identificador único.
 |---|---|---|
 | `matriz_confusion.csv` | VP/FN/FP/VN, sensibilidad, especificidad y precisión con IC 95 % | Parte A: **precisión ≥ 90 %** del Capítulo I |
 | `segmentos.csv` | Cada tramo del bloque guiado con su resultado y latencia | Parte A: tabla de resultados |
-| `resumen_participantes.csv` | Una fila por participante: días válidos, adherencia, y **media de cada indicador en línea base e intervención con su diferencia** | Parte B: **la tabla para la prueba pareada** |
+| `resumen_participantes.csv` | Una fila por participante: grupo, días válidos, adherencia, día de inicio del «después» y **media de cada indicador antes y después con su diferencia** | Parte B: la tabla de datos |
+| `prueba_grupo.csv` | Por indicador, tres pruebas: Wilcoxon antes/después en cada grupo y **Mann-Whitney del cambio con avisos frente al control**, con p de una y dos colas y r | Parte B: **las pruebas de hipótesis** |
+| `reportes/comparacion_grupos.html` | Antes y después de cada persona por grupo, el cambio de cada persona y la media diaria de cada grupo, con la tabla de pruebas | Parte B: **figura principal** del Capítulo IV |
+| `reportes/evolucion_participantes.html` | Un panel por participante con sus días, la línea donde empieza su «después» y el NAP | Parte B: figura complementaria |
 | `resumen_diario.csv` | Una fila por participante y día, con todos los indicadores (ver abajo) | Evolución, gráficos, análisis de días |
 | `perfil_horario.csv` | Indicadores por hora del día y fase | A qué hora empieza el deterioro |
 | `reportes/reporte_P07.html` | **Reporte por participante para el especialista**: comparación, gráficas por día, exposición por bandas, perfil horario, tabla diaria y cómo leerlo. Se abre en el navegador y se imprime a PDF | Revisión clínica |
@@ -264,7 +288,6 @@ sesión tiene un identificador único.
 | Pantalla | distancia mediana, % del tiempo demasiado cerca |
 | Fatiga | PERCLOS medio y p95, minutos con PERCLOS alto, bostezos |
 | Pausas activas | número de pausas (≥ 60 s fuera de cámara), minutos en pausa, **tramo más largo sentado sin pausa** |
-| Respuesta | segundos hasta corregir tras un episodio cervical (con aviso en la intervención, espontáneo en la base), % corregidos en 30 s |
 | Deterioro | Δθc, % desviado y PERCLOS en la primera frente a la última hora (días ≥ 2 h) |
 | Alertas | detectadas, mostradas, por hora y por tipo |
 | Autorreporte | dolor de cuello, cansancio visual, somnolencia (0–10) |
@@ -276,28 +299,43 @@ sesión tiene un identificador único.
 
 1. **Precisión (parte A):** global y por condición con IC 95 %, latencia
    mediana, y el rango por participante.
-2. **Efecto (parte B), resultado principal:** la figura
-   `reportes/linea_base_multiple.html` (un panel por participante, con la
-   línea del día en que empezaron sus avisos) y el **NAP** de `pct_desviado`
-   por participante (`resumen_participantes.csv`, `nap_pct_desviado`;
-   0.5 = sin efecto, 0.66–0.92 medio, ≥ 0.93 fuerte). Con 6 o más
-   participantes de intervención, además **Wilcoxon** sobre las columnas
-   `_base` e `_interv`. En el control, el NAP usa un corte de referencia en el
-   día `baseline_days` y debe salir cerca de 0.5.
+2. **Efecto (parte B), resultado principal** (`prueba_grupo.csv`,
+   `reportes/comparacion_grupos.html`), con `pct_desviado`:
+   - **Prueba principal: U de Mann-Whitney** sobre el cambio (después −
+     antes) de cada persona, grupo con avisos frente a control. Responde
+     a si mejora más quien recibe avisos que quien no.
+   - **Wilcoxon de rangos con signo** dentro de cada grupo: el grupo con
+     avisos debería bajar; el control, cambiar poco.
+   - **Una cola**, en la dirección de la hipótesis (que el indicador baje),
+     declarada aquí, antes de ver los datos; se informa también la de dos
+     colas. Nivel α = 0.05.
+   - **Tamaño del efecto:** r de rangos biserial (|r| ≥ 0.1 pequeño, ≥ 0.3
+     medio, ≥ 0.5 grande). Por participante, además, el **NAP**.
+   - Pruebas exactas (muestras pequeñas, sin supuesto de normalidad).
 3. **Secundarios:** episodio más largo, tramo sin pausa, pausas por hora,
-   PERCLOS, segundos hasta corregir y autorreporte, con la misma prueba.
+   PERCLOS y autorreporte, con las mismas tres pruebas.
    Varias pruebas a la vez: corregir por comparaciones múltiples (Holm) o
    declararlas exploratorias.
 4. **Antes / después con instrumentos externos:** cuestionario de molestias
    (Nórdico o NDI) y, si el especialista lo hace, el CVA con foto lateral.
 5. **Usabilidad:** SUS al cierre, y la adherencia (`adherencia_pct`).
 
+6. **Qué no se analiza:** la reacción inmediata a cada aviso (segundos hasta
+   corregir, pausa en los minutos siguientes). La hipótesis es que la
+   persona **mejora con el uso**, y eso lo miden los indicadores diarios
+   comparados entre fases. La reacción a cada aviso depende de muchos
+   factores del momento y, en la línea base, no hay aviso al que reaccionar.
+   El dato sigue en `eventos.csv` (segundos hasta corregir de cada alerta)
+   por si el jurado lo pide.
+
 ---
 
 ## 9. Ética y datos personales
 
 - **Consentimiento informado** por escrito, que explique que hay una fase sin
-  avisos, que se puede pausar en cualquier momento y que se puede retirar.
+  avisos, que se sortea quién recibe avisos después y quién no (y que al
+  grupo sin avisos se le ofrece activarlos al terminar), que se puede pausar
+  en cualquier momento y que se puede retirar.
 - **Códigos seudónimos** (P01…). La tabla código → persona va en un archivo
   aparte, fuera del repositorio y fuera de los equipos de los participantes.
 - **No se guarda ninguna imagen ni video.** El `.zip` lo explica en `LEEME.txt`.
@@ -384,7 +422,7 @@ La Fase 8 del cronograma termina el **15 de noviembre de 2026**. Con este
 diseño: piloto (1 semana) + instalaciones escalonadas (1–2 semanas) + 15 días de
 uso (3 semanas laborables) + análisis (1 semana) ≈ **6–7 semanas**. **No cabe
 antes del 15 de noviembre**: hay que mover la Fase 8 en el cronograma o
-reducir la parte B (p. ej. 10 días de uso: 3 de base y 7 de intervención,
+reducir la parte B (p. ej. 10 días de uso: 4 de base y 6 de posprueba,
 ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
 
 ---
@@ -398,17 +436,19 @@ ajustando `baseline_days` y los mínimos de §2). Decidirlo antes del piloto.
   acumulada; para ella haría falta una referencia externa (p. ej. el ángulo
   craneovertebral medido de perfil por un especialista) en lugar de la
   postura neutra de cada persona.
-- Muestra pequeña (11–25 personas): no generalizable a la población. La
-  línea base de 3 días del primer grupo cumple el estándar de diseños de caso
-  único solo «con reservas» (Kratochwill et al., 2010).
+- Muestra pequeña (14–19 personas) y no probabilística (por conveniencia):
+  no generalizable a la población. La asignación a los grupos sí es por
+  sorteo, pero con grupos tan pequeños el sorteo no garantiza que sean
+  equivalentes; por eso se compara el **cambio** de cada persona y no solo
+  la posprueba.
 - Precisión medida con condiciones **simuladas** (parte A); en casa no hay
   verdad de terreno.
 - Δθc es una desviación **relativa** a la postura neutra de cada día, no el
   ángulo craneovertebral clínico.
-- Diseño de caso único (línea base múltiple con control): la conclusión vale
-  para los participantes estudiados; el control y los inicios escalonados
-  reducen, pero no eliminan, la influencia de la novedad y de saberse
-  observado (efecto Hawthorne).
+- Sin cegamiento: cada participante sabe en qué grupo está. El grupo de
+  control reduce, pero no elimina, la influencia de la novedad y de saberse
+  observado (efecto Hawthorne), porque el grupo con avisos además recibe
+  atención activa del sistema.
 - En la línea base la ventana de la app muestra las métricas en vivo: quien la
   mira recibe algo de retroalimentación. Por eso se pide trabajar con la
   ventana cerrada.

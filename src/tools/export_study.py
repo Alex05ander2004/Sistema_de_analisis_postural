@@ -30,9 +30,12 @@ Estudio de campo (sesiones linea_base / intervencion), ver field_analysis.py:
   resumen_participantes.csv  Una fila por participante: días válidos y media
                              de cada indicador en línea base e intervención,
                              con su diferencia y el NAP.
-  prueba_grupo.csv           Wilcoxon de rangos con signo y r biserial por
-                             indicador (grupo de intervención, válidos).
-  reportes/linea_base_multiple.html  Figura de línea base múltiple.
+  prueba_grupo.csv           Por indicador: Wilcoxon antes/después en cada
+                             grupo y Mann-Whitney del cambio con avisos
+                             frente al del control (prueba principal), con
+                             p de una y dos colas y r biserial.
+  reportes/comparacion_grupos.html   Antes/después y cambio por grupo.
+  reportes/evolucion_participantes.html  Un panel por participante.
   perfil_horario.csv         Indicadores por hora del día y fase.
   reportes/reporte_<P>.html  Reporte por participante para el especialista.
   detalle/metricas_<P>.csv   Filas de metrics_log de campo, un archivo por
@@ -775,7 +778,7 @@ class _FieldExport:
         if reports:
             write_reports(out_dir / "reportes", self.summaries,
                           self.days_by_code, self.hourly_by_code,
-                          fcfg.dev_threshold, fcfg.bands)
+                          fcfg.dev_threshold, fcfg.bands, tests)
         return {"participants": self.summaries, "days": self.all_days,
                 "tests": tests}
 
@@ -826,15 +829,22 @@ def print_summary(result: dict) -> None:
                   f"{p['dias_validos']:7d} {p['dias_validos_linea_base']:4d} "
                   f"{p['dias_validos_intervencion']:6d}  {cambio:>20s}  "
                   f"{nap_txt}")
-        main = next((t for t in field.get("tests", [])
-                     if t["indicador"] == "pct_desviado"), None)
-        if main and main["n_pares"]:
-            p_txt = "—" if main["p"] is None else f"{main['p']:.3f}"
-            r_txt = ("—" if main["r_biserial"] is None
-                     else f"{main['r_biserial']:+.2f}")
-            print(f"  Wilcoxon (% desviado, grupo de intervención): "
-                  f"n = {main['n_pares']}, p = {p_txt}, r = {r_txt}"
-                  + (f"  [{main['nota']}]" if main["nota"] else ""))
+        rows = [t for t in field.get("tests", [])
+                if t["indicador"] == "pct_desviado"]
+        if rows:
+            print("  % del tiempo desviado:")
+        for t in rows:
+            n = (f"{t['n_intervencion']} + {t['n_control']}"
+                 if t["prueba"] == fa.TEST_BETWEEN else
+                 t["n_intervencion"] if t["prueba"] == fa.TEST_WITHIN_INTERV
+                 else t["n_control"])
+            p1 = "—" if t["p_una_cola"] is None else f"{t['p_una_cola']:.3f}"
+            p2 = "—" if t["p_dos_colas"] is None else f"{t['p_dos_colas']:.3f}"
+            r_txt = ("—" if t["r_biserial"] is None
+                     else f"{t['r_biserial']:+.2f}")
+            print(f"    {t['nombre_prueba']}: n = {n}, p = {p1} (una cola), "
+                  f"{p2} (dos colas), r = {r_txt}"
+                  + (f"  [{t['nota']}]" if t["nota"] else ""))
         versions = {v for p in parts_f for v in p["versiones_app"].split(";")
                     if v}
         if len(versions) > 1:

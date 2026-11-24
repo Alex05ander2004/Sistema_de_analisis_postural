@@ -1531,7 +1531,7 @@ def main(page: ft.Page):
                  ft.dropdown.Option(GROUP_CONTROL,
                                     "Control (solo medición, nunca avisa)")])
     cfg_days = ft.Dropdown(
-        label="Días de línea base (sorteados)", width=300, text_size=14,
+        label="Días de línea base (5 para todos)", width=300, text_size=14,
         options=[ft.dropdown.Option(str(n)) for n in
                  range(MIN_BASELINE_DAYS, MAX_BASELINE_DAYS + 1)])
     cfg_real = ft.TextField(label="Distancia real medida (m)", width=260,
@@ -1614,8 +1614,9 @@ def main(page: ft.Page):
                     "del participante.", size=12, color=ft.colors.WHITE54),
             cfg_code, cfg_mode, cfg_group, cfg_days,
             ft.Text("Grupo y días de línea base solo cuentan en modo campo. "
-                    "Sortea los días de línea base entre los participantes "
-                    "de intervención: 3, 5 o 7.",
+                    "Todos los participantes, de los dos grupos, con 5 días "
+                    "de línea base. El grupo se sortea por parejas parecidas "
+                    "(ver el protocolo).",
                     size=11, color=ft.colors.WHITE54),
             ft.Divider(),
             ft.Text("Cámara de este equipo (FOV)", weight=ft.FontWeight.W_600),

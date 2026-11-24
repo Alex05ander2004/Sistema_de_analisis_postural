@@ -135,9 +135,7 @@
     "break_min_sec": 60,
     "_break_min_sec_comment": "Ausencia mínima (ni cuerpo ni cara) que cuenta como pausa activa y reinicia el tramo. Es el mismo criterio que usa el análisis de campo (pausas por hora).",
     "unknown_gap_sec": 300,
-    "_unknown_gap_sec_comment": "Un hueco sin mediciones mayor que esto (app en pausa, cámara cedida a una videollamada) también reinicia el tramo: no se sabe si la persona se levantó, y nunca se avisa por tiempo que no se midió.",
-    "response_window_min": 10,
-    "_response_window_min_comment": "Solo análisis: plazo tras el aviso dentro del cual una pausa cuenta como respuesta (indicador pct_pausa_tras_aviso_inactividad)."
+    "_unknown_gap_sec_comment": "Un hueco sin mediciones mayor que esto (app en pausa, cámara cedida a una videollamada) también reinicia el tramo: no se sabe si la persona se levantó, y nunca se avisa por tiempo que no se midió."
   },
   "study": {
     "enabled": true,
