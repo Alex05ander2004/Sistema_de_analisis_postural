@@ -36,6 +36,10 @@ data/*.csv
 # Resultados exportados del estudio: son datos de personas (aunque
 # seudonimizados). No deben subirse a un repositorio.
 data/estudio_*/
+# Carpeta donde el protocolo (§7) dice guardar los .zip recibidos de los
+# participantes: son sus datos y nunca deben subirse.
+recibidos/
+*.zip
 # Perfil de cada equipo (código del participante, modo, FOV de su cámara)
 data/estudio_local.json
 resultados/
